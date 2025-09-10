@@ -22,6 +22,7 @@
 
 #import <Foundation/Foundation.h>
 #import <IJKMediaPlayer/IJKMediaPlayer.h>
+#import <AVFoundation/AVFoundation.h>
 
 #import <Flutter/FlutterPlugin.h>
 

@@ -30,6 +30,7 @@
 #import <IJKMediaPlayer/IJKMediaPlayer.h>
 #import <libkern/OSAtomic.h>
 #import <stdatomic.h>
+#import <TargetConditionals.h>
 
 @interface FijkPlugin ()
 
@@ -62,6 +63,13 @@ static atomic_int atomicId = 0;
     int _state;
     int _pid;
     int64_t _vid;
+    
+    // Recording related properties
+    AVAssetWriter *_assetWriter;
+    AVAssetWriterInput *_writerInput;
+    AVAssetWriterInputPixelBufferAdaptor *_pixelBufferAdaptor;
+    BOOL _isRecording;
+    NSString *_recordingPath;
 }
 
 static const int idle = 0;
@@ -124,9 +132,35 @@ static int renderType = 0;
         [_ijkMediaPlayer setOptionIntValue:1
                                     forKey:@"enable-position-notify"
                                 ofCategory:kIJKFFOptionCategoryPlayer];
+        
+        // Configure video decoding based on device type
+#if TARGET_OS_SIMULATOR
+        // iOS Simulator - use software decoding for better compatibility
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"videotoolbox"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"videotoolbox-hevc"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        // Force software decoding
+        [_ijkMediaPlayer setOptionIntValue:1
+                                    forKey:@"mediacodec"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        [_ijkMediaPlayer setOptionIntValue:1
+                                    forKey:@"mediacodec-hevc"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        // Ensure proper pixel format for simulator
+        [_ijkMediaPlayer setOptionValue:@"fcc-bgra"
+                                 forKey:@"overlay-format"
+                             ofCategory:kIJKFFOptionCategoryPlayer];
+        NSLog(@"FijkPlayer: Configured for iOS Simulator with software decoding");
+#else
+        // Real iOS devices - use hardware acceleration
         [_ijkMediaPlayer setOptionIntValue:1
                                     forKey:@"videotoolbox"
                                 ofCategory:kIJKFFOptionCategoryPlayer];
+        NSLog(@"FijkPlayer: Configured for iOS device with hardware acceleration");
+#endif
 
         [IJKFFMoviePlayerController setLogLevel:k_IJK_LOG_INFO];
 
@@ -161,6 +195,19 @@ static int renderType = 0;
 }
 
 - (void)shutdown {
+    // Stop recording if in progress
+    if (_isRecording && _assetWriter) {
+        _isRecording = NO;
+        [_writerInput markAsFinished];
+        [_assetWriter finishWritingWithCompletionHandler:^{
+            // Recording cleanup handled in completion
+        }];
+        _assetWriter = nil;
+        _writerInput = nil;
+        _pixelBufferAdaptor = nil;
+        _recordingPath = nil;
+    }
+    
     [self handleEvent:IJKMPET_PLAYBACK_STATE_CHANGED
               andArg1:end
               andArg2:_state
@@ -235,6 +282,27 @@ static int renderType = 0;
     }
     if (_vid >= 0) {
         [_textureRegistry textureFrameAvailable:_vid];
+    }
+    
+    // Record frame if recording is active
+    if (_isRecording && _writerInput && _pixelBufferAdaptor && _assetWriter) {
+        if (_writerInput.readyForMoreMediaData) {
+            // Use a more accurate timestamp based on recording session time
+            static CMTime lastRecordedTime = {0};
+            CMTime currentTime = CMTimeMake([_ijkMediaPlayer getCurrentPosition], 1000);
+            
+            // Ensure timestamps are monotonically increasing
+            if (CMTIME_IS_VALID(lastRecordedTime) && CMTimeCompare(currentTime, lastRecordedTime) <= 0) {
+                currentTime = CMTimeAdd(lastRecordedTime, CMTimeMake(33, 1000)); // ~30fps fallback
+            }
+            
+            BOOL success = [_pixelBufferAdaptor appendPixelBuffer:pixelbuffer withPresentationTime:currentTime];
+            if (success) {
+                lastRecordedTime = currentTime;
+            } else {
+                NSLog(@"Failed to append pixel buffer for recording at time: %f", CMTimeGetSeconds(currentTime));
+            }
+        }
     }
 }
 
@@ -448,6 +516,142 @@ static int renderType = 0;
     }];
 }
 
+- (void)startRecordingWithPath:(NSString *)path result:(FlutterResult)result {
+    if (_isRecording) {
+        result([FlutterError errorWithCode:@"RECORDING_IN_PROGRESS"
+                                   message:@"Recording is already in progress"
+                                   details:nil]);
+        return;
+    }
+    
+    if (!path || [path length] == 0) {
+        result([FlutterError errorWithCode:@"INVALID_PATH"
+                                   message:@"Recording path cannot be null or empty"
+                                   details:nil]);
+        return;
+    }
+    
+    // Remove existing file if it exists
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    if ([fileManager fileExistsAtPath:path]) {
+        NSError *error;
+        [fileManager removeItemAtPath:path error:&error];
+        if (error) {
+            result([FlutterError errorWithCode:@"FILE_ERROR"
+                                       message:[NSString stringWithFormat:@"Failed to remove existing file: %@", error.localizedDescription]
+                                       details:nil]);
+            return;
+        }
+    }
+    
+    NSURL *outputURL = [NSURL fileURLWithPath:path];
+    NSError *error;
+    
+    // Create asset writer
+    _assetWriter = [[AVAssetWriter alloc] initWithURL:outputURL
+                                             fileType:AVFileTypeMPEG4
+                                                error:&error];
+    
+    if (error || !_assetWriter) {
+        result([FlutterError errorWithCode:@"WRITER_CREATION_FAILED"
+                                   message:[NSString stringWithFormat:@"Failed to create asset writer: %@", error.localizedDescription]
+                                   details:nil]);
+        return;
+    }
+    
+    // Configure video settings
+    NSDictionary *videoSettings = @{
+        AVVideoCodecKey: AVVideoCodecTypeH264,
+        AVVideoWidthKey: @(_width > 0 ? _width : 1280),
+        AVVideoHeightKey: @(_height > 0 ? _height : 720),
+        AVVideoCompressionPropertiesKey: @{
+            AVVideoAverageBitRateKey: @(1000000), // 1Mbps
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel
+        }
+    };
+    
+    // Create writer input
+    _writerInput = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo
+                                                      outputSettings:videoSettings];
+    _writerInput.expectsMediaDataInRealTime = YES;
+    
+    // Create pixel buffer adaptor
+    NSDictionary *pixelBufferAttributes = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferWidthKey: @(_width > 0 ? _width : 1280),
+        (NSString *)kCVPixelBufferHeightKey: @(_height > 0 ? _height : 720),
+    };
+    
+    _pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor
+                          assetWriterInputPixelBufferAdaptorWithAssetWriterInput:_writerInput
+                                                          sourcePixelBufferAttributes:pixelBufferAttributes];
+    
+    if ([_assetWriter canAddInput:_writerInput]) {
+        [_assetWriter addInput:_writerInput];
+    } else {
+        result([FlutterError errorWithCode:@"INPUT_NOT_SUPPORTED"
+                                   message:@"Cannot add input to asset writer"
+                                   details:nil]);
+        _assetWriter = nil;
+        _writerInput = nil;
+        _pixelBufferAdaptor = nil;
+        return;
+    }
+    
+    // Start writing
+    if ([_assetWriter startWriting]) {
+        [_assetWriter startSessionAtSourceTime:kCMTimeZero];
+        _isRecording = YES;
+        _recordingPath = path;
+        
+        // Notify Dart that recording started
+        [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];
+        result(nil);
+    } else {
+        result([FlutterError errorWithCode:@"START_WRITING_FAILED"
+                                   message:[NSString stringWithFormat:@"Failed to start writing: %@", _assetWriter.error.localizedDescription]
+                                   details:nil]);
+        _assetWriter = nil;
+        _writerInput = nil;
+        _pixelBufferAdaptor = nil;
+    }
+}
+
+- (void)stopRecordingWithResult:(FlutterResult)result {
+    if (!_isRecording || !_assetWriter) {
+        result([FlutterError errorWithCode:@"NO_RECORDING"
+                                   message:@"No recording in progress"
+                                   details:nil]);
+        return;
+    }
+    
+    _isRecording = NO;
+    
+    [_writerInput markAsFinished];
+    [_assetWriter finishWritingWithCompletionHandler:^{
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self->_assetWriter.status == AVAssetWriterStatusCompleted) {
+                // Notify Dart that recording stopped
+                [self->_methodChannel invokeMethod:@"_onRecordingStopped" arguments:self->_recordingPath];
+                result(nil);
+            } else {
+                NSString *errorMessage = self->_assetWriter.error ? 
+                    self->_assetWriter.error.localizedDescription : @"Unknown error";
+                [self->_methodChannel invokeMethod:@"_onRecordingError" arguments:errorMessage];
+                result([FlutterError errorWithCode:@"FINISH_WRITING_FAILED"
+                                           message:[NSString stringWithFormat:@"Failed to finish writing: %@", errorMessage]
+                                           details:nil]);
+            }
+            
+            // Clean up
+            self->_assetWriter = nil;
+            self->_writerInput = nil;
+            self->_pixelBufferAdaptor = nil;
+            self->_recordingPath = nil;
+        });
+    }];
+}
+
 - (void)handleMethodCall:(FlutterMethodCall *)call
                   result:(FlutterResult)result {
 
@@ -580,6 +784,11 @@ static int renderType = 0;
     } else if ([@"snapshot" isEqualToString:call.method]) {
         [self takeSnapshot];
         result(nil);
+    } else if ([@"startRecording" isEqualToString:call.method]) {
+        NSString *path = argsMap[@"path"];
+        [self startRecordingWithPath:path result:result];
+    } else if ([@"stopRecording" isEqualToString:call.method]) {
+        [self stopRecordingWithResult:result];
     } else {
         result(FlutterMethodNotImplemented);
     }

@@ -113,6 +113,8 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
 
   final Completer<int> _nativeSetup;
   Completer<Uint8List>? _snapShot;
+  Completer<void>? _recording;
+  bool _isRecording = false;
 
   FijkPlayer()
       : _nativeSetup = Completer(),
@@ -156,6 +158,24 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
           }
         }
         _snapShot = null;
+        break;
+      case "_onRecordingStarted":
+        var recording = _recording;
+        if (recording != null && !recording.isCompleted) {
+          _isRecording = true;
+          recording.complete();
+        }
+        break;
+      case "_onRecordingStopped":
+        _isRecording = false;
+        break;
+      case "_onRecordingError":
+        var recording = _recording;
+        if (recording != null && !recording.isCompleted) {
+          var error = call.arguments;
+          recording.completeError(Exception("Recording error: $error"));
+        }
+        _isRecording = false;
         break;
       default:
         break;
@@ -254,6 +274,67 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     _snapShot = snapShot;
     _channel.invokeMethod("snapshot");
     return snapShot.future;
+  }
+
+  /// Get current recording status
+  bool get isRecording => _isRecording;
+
+  /// Start video recording to file
+  ///
+  /// [path] is the output file path where the video will be saved
+  /// The video will be recorded in MP4/H.264 format
+  ///
+  /// If you want to use [startRecording], you must ensure the player is in a playable state.
+  /// The recording will capture the same video content that is being displayed.
+  ///
+  /// Example:
+  /// ```
+  /// await player.startRecording('/path/to/output.mp4');
+  /// // ... recording in progress
+  /// await player.stopRecording();
+  /// ```
+  Future<void> startRecording(String path) async {
+    await _nativeSetup.future;
+    if (_isRecording) {
+      return Future.error(StateError("Recording is already in progress"));
+    }
+    if (!isPlayable()) {
+      return Future.error(StateError("Player must be in playable state to start recording"));
+    }
+    FijkLog.i("$this startRecording to $path");
+    
+    var recording = Completer<void>();
+    _recording = recording;
+    
+    try {
+      await _channel.invokeMethod("startRecording", <String, dynamic>{'path': path});
+      await recording.future;
+      FijkLog.i("$this recording started successfully");
+    } catch (e) {
+      _recording = null;
+      _isRecording = false;
+      rethrow;
+    }
+  }
+
+  /// Stop video recording
+  ///
+  /// This method stops the current recording session and finalizes the output file.
+  /// The recorded video file will be available at the path specified in [startRecording].
+  ///
+  /// Example:
+  /// ```
+  /// await player.stopRecording();
+  /// ```
+  Future<void> stopRecording() async {
+    await _nativeSetup.future;
+    if (!_isRecording) {
+      return Future.error(StateError("No recording in progress"));
+    }
+    FijkLog.i("$this stopRecording");
+    await _channel.invokeMethod("stopRecording");
+    _recording = null;
+    _isRecording = false;
   }
 
   /// Set data source for this player

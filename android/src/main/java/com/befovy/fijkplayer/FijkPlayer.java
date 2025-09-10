@@ -26,7 +26,15 @@ import android.content.Context;
 import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.graphics.SurfaceTexture;
+import android.media.MediaCodec;
+import android.media.MediaCodecInfo;
+import android.media.MediaFormat;
+import android.media.MediaMuxer;
 import android.net.Uri;
+import android.opengl.GLES11Ext;
+import android.opengl.GLES20;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.text.TextUtils;
 import android.util.Log;
 import android.view.Surface;
@@ -89,6 +97,19 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
     private SurfaceTexture mSurfaceTexture;
     private Surface mSurface;
     final private boolean mJustSurface;
+    
+    // Recording related fields
+    private MediaCodec mMediaCodec;
+    private MediaMuxer mMediaMuxer;
+    private Surface mRecordingSurface;
+    private boolean mIsRecording = false;
+    private String mRecordingPath;
+    private int mVideoTrackIndex = -1;
+    private boolean mMuxerStarted = false;
+    private HandlerThread mRecordingThread;
+    private Handler mRecordingHandler;
+    private VideoRecordingSurfaceHelper mRecordingSurfaceHelper;
+    private int mOESTextureId = 0;
 
     FijkPlayer(@NonNull FijkEngine engine, boolean justSurface) {
         mEngine = engine;
@@ -160,6 +181,10 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
     }
 
     void release() {
+        // Stop recording if in progress
+        if (mIsRecording) {
+            cleanupRecording();
+        }
         if (!mJustSurface) {
             handleEvent(PLAYBACK_STATE_CHANGED, end, mState, null);
             mIjkMediaPlayer.release();
@@ -366,6 +391,223 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
         }
     }
 
+    private void startRecording(String path, MethodChannel.Result result) {
+        if (mIsRecording) {
+            result.error("RECORDING_IN_PROGRESS", "Recording is already in progress", null);
+            return;
+        }
+
+        if (path == null || path.isEmpty()) {
+            result.error("INVALID_PATH", "Recording path cannot be null or empty", null);
+            return;
+        }
+
+        try {
+            // Initialize recording thread
+            mRecordingThread = new HandlerThread("RecordingThread");
+            mRecordingThread.start();
+            mRecordingHandler = new Handler(mRecordingThread.getLooper());
+
+            // Create MediaMuxer for output
+            mMediaMuxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+
+            // Create MediaCodec for H.264 encoding
+            MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 
+                mWidth > 0 ? mWidth : 1280, mHeight > 0 ? mHeight : 720);
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 1000000); // 1Mbps
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5);
+
+            mMediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            mMediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            
+            // Get input surface for encoding
+            mRecordingSurface = mMediaCodec.createInputSurface();
+            mMediaCodec.start();
+
+            // Initialize recording surface helper for texture copying
+            mRecordingSurfaceHelper = new VideoRecordingSurfaceHelper();
+            if (!mRecordingSurfaceHelper.initialize(mRecordingSurface)) {
+                cleanupRecording();
+                result.error("SURFACE_INIT_FAILED", "Failed to initialize recording surface helper", null);
+                return;
+            }
+
+            // Set frame listener to capture frames
+            if (mSurfaceTexture != null) {
+                mSurfaceTexture.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
+                    @Override
+                    public void onFrameAvailable(SurfaceTexture surfaceTexture) {
+                        if (mIsRecording && mRecordingSurfaceHelper != null) {
+                            // Copy frame to MediaCodec surface using OpenGL
+                            mRecordingHandler.post(() -> {
+                                try {
+                                    surfaceTexture.updateTexImage();
+                                    
+                                    // Create OES texture if not exists
+                                    if (mOESTextureId == 0) {
+                                        int[] textures = new int[1];
+                                        android.opengl.GLES20.glGenTextures(1, textures, 0);
+                                        mOESTextureId = textures[0];
+                                        android.opengl.GLES20.glBindTexture(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, mOESTextureId);
+                                        android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 
+                                            android.opengl.GLES20.GL_TEXTURE_MIN_FILTER, android.opengl.GLES20.GL_LINEAR);
+                                        android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 
+                                            android.opengl.GLES20.GL_TEXTURE_MAG_FILTER, android.opengl.GLES20.GL_LINEAR);
+                                        android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 
+                                            android.opengl.GLES20.GL_TEXTURE_WRAP_S, android.opengl.GLES20.GL_CLAMP_TO_EDGE);
+                                        android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, 
+                                            android.opengl.GLES20.GL_TEXTURE_WRAP_T, android.opengl.GLES20.GL_CLAMP_TO_EDGE);
+                                    }
+                                    
+                                    float[] transformMatrix = new float[16];
+                                    surfaceTexture.getTransformMatrix(transformMatrix);
+                                    mRecordingSurfaceHelper.drawFrame(mOESTextureId, transformMatrix);
+                                } catch (Exception e) {
+                                    Log.e("FIJKPLAYER", "Error processing frame for recording", e);
+                                }
+                            });
+                        }
+                    }
+                });
+            }
+
+            // Set up async callback for MediaCodec
+            mMediaCodec.setCallback(new MediaCodec.Callback() {
+                @Override
+                public void onInputBufferAvailable(MediaCodec codec, int index) {
+                    // Surface input, so this won't be called
+                }
+
+                @Override
+                public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+                    if (mIsRecording) {
+                        mRecordingHandler.post(() -> processEncodedData(codec, index, info));
+                    }
+                }
+
+                @Override
+                public void onError(MediaCodec codec, MediaCodec.CodecException e) {
+                    Log.e("FIJKPLAYER", "MediaCodec error", e);
+                    mMethodChannel.invokeMethod("_onRecordingError", e.getMessage());
+                }
+
+                @Override
+                public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+                    if (!mMuxerStarted) {
+                        mVideoTrackIndex = mMediaMuxer.addTrack(format);
+                        mMediaMuxer.start();
+                        mMuxerStarted = true;
+                        Log.d("FIJKPLAYER", "MediaMuxer started");
+                    }
+                }
+            }, mRecordingHandler);
+
+            mRecordingPath = path;
+            mIsRecording = true;
+            
+            // Notify Dart side that recording started
+            mMethodChannel.invokeMethod("_onRecordingStarted", null);
+            result.success(null);
+            
+        } catch (Exception e) {
+            Log.e("FIJKPLAYER", "Failed to start recording", e);
+            cleanupRecording();
+            mMethodChannel.invokeMethod("_onRecordingError", e.getMessage());
+            result.error("RECORDING_FAILED", "Failed to start recording: " + e.getMessage(), null);
+        }
+    }
+
+    private void processEncodedData(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+        if (mIsRecording && mMuxerStarted) {
+            try {
+                java.nio.ByteBuffer encodedData = codec.getOutputBuffer(index);
+                if (encodedData != null && info.size > 0) {
+                    mMediaMuxer.writeSampleData(mVideoTrackIndex, encodedData, info);
+                }
+                codec.releaseOutputBuffer(index, false);
+            } catch (Exception e) {
+                Log.e("FIJKPLAYER", "Error processing encoded data", e);
+            }
+        } else {
+            codec.releaseOutputBuffer(index, false);
+        }
+    }
+
+    private void cleanupRecording() {
+        mIsRecording = false;
+        
+        if (mRecordingSurfaceHelper != null) {
+            mRecordingSurfaceHelper.release();
+            mRecordingSurfaceHelper = null;
+        }
+        
+        if (mOESTextureId != 0) {
+            GLES20.glDeleteTextures(1, new int[]{mOESTextureId}, 0);
+            mOESTextureId = 0;
+        }
+        
+        if (mMediaCodec != null) {
+            try {
+                mMediaCodec.stop();
+                mMediaCodec.release();
+            } catch (Exception e) {
+                Log.e("FIJKPLAYER", "Error stopping MediaCodec", e);
+            }
+            mMediaCodec = null;
+        }
+        
+        if (mRecordingSurface != null) {
+            mRecordingSurface.release();
+            mRecordingSurface = null;
+        }
+        
+        if (mMediaMuxer != null) {
+            try {
+                if (mMuxerStarted) {
+                    mMediaMuxer.stop();
+                }
+                mMediaMuxer.release();
+            } catch (Exception e) {
+                Log.e("FIJKPLAYER", "Error stopping MediaMuxer", e);
+            }
+            mMediaMuxer = null;
+        }
+        
+        if (mRecordingThread != null) {
+            mRecordingThread.quitSafely();
+            mRecordingThread = null;
+            mRecordingHandler = null;
+        }
+        
+        mVideoTrackIndex = -1;
+        mMuxerStarted = false;
+        mRecordingPath = null;
+    }
+
+    private void stopRecording(MethodChannel.Result result) {
+        if (!mIsRecording) {
+            result.error("NO_RECORDING", "No recording in progress", null);
+            return;
+        }
+
+        try {
+            String recordingPath = mRecordingPath;
+            cleanupRecording();
+            
+            // Notify Dart side that recording stopped
+            mMethodChannel.invokeMethod("_onRecordingStopped", recordingPath);
+            result.success(null);
+            
+        } catch (Exception e) {
+            Log.e("FIJKPLAYER", "Failed to stop recording", e);
+            cleanupRecording();
+            mMethodChannel.invokeMethod("_onRecordingError", e.getMessage());
+            result.error("RECORDING_STOP_FAILED", "Failed to stop recording: " + e.getMessage(), null);
+        }
+    }
+
     @Override
     public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
         //noinspection IfCanBeSwitch
@@ -486,6 +728,11 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                 mMethodChannel.invokeMethod("_onSnapshot", "not support");
             }
             result.success(null);
+        } else if (call.method.equals("startRecording")) {
+            final String path = call.argument("path");
+            startRecording(path, result);
+        } else if (call.method.equals("stopRecording")) {
+            stopRecording(result);
         } else {
             result.notImplemented();
         }

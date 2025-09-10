@@ -132,4 +132,42 @@ class FijkOption {
       throw ArgumentError.value(value, "value", "Must be int or String");
     }
   }
+
+  /// Configure options for iOS Simulator compatibility
+  /// 
+  /// iOS Simulator doesn't support hardware video acceleration well,
+  /// so this method configures software decoding options for better compatibility.
+  /// Call this when running on iOS Simulator to ensure video displays properly.
+  /// 
+  /// Example:
+  /// ```dart
+  /// import 'dart:io' show Platform;
+  /// 
+  /// FijkOption option = FijkOption();
+  /// if (Platform.isIOS) {
+  ///   option.configureForIOSSimulator();
+  ///   await player.applyOptions(option);
+  /// }
+  /// ```
+  /// 
+  /// Note: This configuration should only be used during development on iOS Simulator.
+  /// Real iOS devices should use hardware acceleration for better performance.
+  void configureForIOSSimulator() {
+    // Disable hardware acceleration which doesn't work well on simulator
+    setPlayerOption("videotoolbox", 0);
+    setPlayerOption("videotoolbox-hevc", 0);
+    
+    // Force software decoding
+    setPlayerOption("mediacodec", 1);
+    setPlayerOption("mediacodec-hevc", 1);
+    
+    // Set pixel format for better simulator compatibility
+    setPlayerOption("overlay-format", "fcc-bgra");
+    
+    // Additional simulator-friendly options
+    setPlayerOption("framedrop", 1);
+    setPlayerOption("start-on-prepared", 0);
+    
+    FijkLog.i("FijkOption: Configured for iOS Simulator compatibility");
+  }
 }
