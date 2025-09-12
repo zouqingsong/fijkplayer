@@ -153,20 +153,25 @@ class FijkOption {
   /// Note: This configuration should only be used during development on iOS Simulator.
   /// Real iOS devices should use hardware acceleration for better performance.
   void configureForIOSSimulator() {
-    // Disable hardware acceleration which doesn't work well on simulator
+    // Disable hardware acceleration completely for iOS Simulator
     setPlayerOption("videotoolbox", 0);
     setPlayerOption("videotoolbox-hevc", 0);
+    setPlayerOption("videotoolbox-handle-resolution-change", 0);
     
-    // Force software decoding
-    setPlayerOption("mediacodec", 1);
-    setPlayerOption("mediacodec-hevc", 1);
+    // Force software decoding path
+    setCodecOption("vcodec", "avdec_h264");
     
-    // Set pixel format for better simulator compatibility
-    setPlayerOption("overlay-format", "fcc-bgra");
+    // Use simulator-safe pixel format
+    setPlayerOption("overlay-format", "nv12");
+    
+    // Disable problematic optimizations for simulator
+    setCodecOption("fast", 0);
+    setPlayerOption("enable-accurate-seek", 1);
     
     // Additional simulator-friendly options
     setPlayerOption("framedrop", 1);
     setPlayerOption("start-on-prepared", 0);
+    setPlayerOption("enable-position-notify", 1);
     
     FijkLog.i("FijkOption: Configured for iOS Simulator compatibility");
   }

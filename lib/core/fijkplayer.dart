@@ -475,6 +475,13 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     if (isPlayable()) {
       FijkLog.i("$this invoke pause");
       await _channel.invokeMethod("pause");
+    } else if (state == FijkState.idle || 
+               state == FijkState.initialized || 
+               state == FijkState.stopped ||
+               state == FijkState.completed) {
+      // Gracefully handle pause() calls on non-playable states
+      FijkLog.w("$this invoke pause on state:$state, ignoring (this is safe)");
+      return; // No-op, don't throw error
     } else {
       FijkLog.e("$this invoke pause invalid state:$state");
       return Future.error(StateError("call pause on invalid state $state"));
@@ -483,11 +490,14 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
 
   Future<void> stop() async {
     await _nativeSetup.future;
-    if (state == FijkState.end ||
-        state == FijkState.idle ||
-        state == FijkState.initialized) {
+    if (state == FijkState.end) {
       FijkLog.e("$this invoke stop invalid state:$state");
       return Future.error(StateError("call stop on invalid state $state"));
+    } else if (state == FijkState.idle || state == FijkState.initialized) {
+      // Gracefully handle stop() calls on idle/initialized states
+      // These are common when user calls stop() multiple times or before playing
+      FijkLog.w("$this invoke stop on state:$state, ignoring (this is safe)");
+      return; // No-op, don't throw error
     } else {
       FijkLog.i("$this invoke stop");
       await _channel.invokeMethod("stop");

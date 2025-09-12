@@ -135,24 +135,50 @@ static int renderType = 0;
         
         // Configure video decoding based on device type
 #if TARGET_OS_SIMULATOR
-        // iOS Simulator - use software decoding for better compatibility
+        // iOS Simulator - disable hardware acceleration completely
         [_ijkMediaPlayer setOptionIntValue:0
                                     forKey:@"videotoolbox"
                                 ofCategory:kIJKFFOptionCategoryPlayer];
         [_ijkMediaPlayer setOptionIntValue:0
                                     forKey:@"videotoolbox-hevc"
                                 ofCategory:kIJKFFOptionCategoryPlayer];
-        // Force software decoding
-        [_ijkMediaPlayer setOptionIntValue:1
-                                    forKey:@"mediacodec"
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"videotoolbox-handle-resolution-change"
                                 ofCategory:kIJKFFOptionCategoryPlayer];
-        [_ijkMediaPlayer setOptionIntValue:1
-                                    forKey:@"mediacodec-hevc"
-                                ofCategory:kIJKFFOptionCategoryPlayer];
-        // Ensure proper pixel format for simulator
+        
+        // Force software decoding path
+        [_ijkMediaPlayer setOptionValue:@"avdec_h264"
+                                 forKey:@"vcodec"
+                             ofCategory:kIJKFFOptionCategoryCodec];
+        
+        // Use BGRA format for iOS Simulator (reverted from NV12)
         [_ijkMediaPlayer setOptionValue:@"fcc-bgra"
                                  forKey:@"overlay-format"
                              ofCategory:kIJKFFOptionCategoryPlayer];
+        
+        // Disable frame dropping to ensure consistent stride
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"framedrop"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        
+        // Alternative: Force specific software decoder options
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"hwaccel"
+                                ofCategory:kIJKFFOptionCategoryCodec];
+        [_ijkMediaPlayer setOptionIntValue:1
+                                    forKey:@"threads"
+                                ofCategory:kIJKFFOptionCategoryCodec];
+        
+        NSLog(@"FijkPlayer: iOS Simulator configured with BGRA format and software decoding");
+        
+        // Disable problematic optimizations for simulator
+        [_ijkMediaPlayer setOptionIntValue:0
+                                    forKey:@"fast"
+                                ofCategory:kIJKFFOptionCategoryCodec];
+        [_ijkMediaPlayer setOptionIntValue:1
+                                    forKey:@"enable-accurate-seek"
+                                ofCategory:kIJKFFOptionCategoryPlayer];
+        
         NSLog(@"FijkPlayer: Configured for iOS Simulator with software decoding");
 #else
         // Real iOS devices - use hardware acceleration
@@ -256,6 +282,72 @@ static int renderType = 0;
     return nil;
 }
 
+// Create a Flutter-compatible pixel buffer with proper stride alignment
+- (CVPixelBufferRef _Nullable)createFlutterCompatiblePixelBuffer:(CVPixelBufferRef)sourceBuffer {
+    if (sourceBuffer == nil) return nil;
+    
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(sourceBuffer);
+    size_t width = CVPixelBufferGetWidth(sourceBuffer);
+    size_t height = CVPixelBufferGetHeight(sourceBuffer);
+    
+    // Only process BGRA format for iOS Simulator
+#if TARGET_OS_SIMULATOR
+    if (pixelFormat != kCVPixelFormatType_32BGRA) {
+        return nil; // Let IJKPlayer handle format conversion
+    }
+    
+    // Check if the source buffer already has proper alignment
+    CVPixelBufferLockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    size_t sourceBytesPerRow = CVPixelBufferGetBytesPerRow(sourceBuffer);
+    size_t expectedBytesPerRow = width * 4; // 4 bytes per pixel for BGRA
+    
+    // If stride is already correct, use original buffer
+    if (sourceBytesPerRow == expectedBytesPerRow) {
+        CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        return nil; // Use original buffer
+    }
+    
+    // Create a new buffer with proper alignment
+    NSDictionary *attributes = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferBytesPerRowAlignmentKey: @(1), // Ensure minimal alignment
+    };
+    
+    CVPixelBufferRef newBuffer = nil;
+    CVReturn result = CVPixelBufferCreate(kCFAllocatorDefault, width, height, 
+                                         kCVPixelFormatType_32BGRA, 
+                                         (__bridge CFDictionaryRef)attributes, 
+                                         &newBuffer);
+    
+    if (result != kCVReturnSuccess || newBuffer == nil) {
+        CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+        return nil;
+    }
+    
+    // Copy pixel data with proper stride
+    CVPixelBufferLockBaseAddress(newBuffer, 0);
+    
+    uint8_t *sourceData = (uint8_t *)CVPixelBufferGetBaseAddress(sourceBuffer);
+    uint8_t *destData = (uint8_t *)CVPixelBufferGetBaseAddress(newBuffer);
+    size_t destBytesPerRow = CVPixelBufferGetBytesPerRow(newBuffer);
+    
+    for (size_t row = 0; row < height; row++) {
+        memcpy(destData + row * destBytesPerRow, 
+               sourceData + row * sourceBytesPerRow, 
+               expectedBytesPerRow);
+    }
+    
+    CVPixelBufferUnlockBaseAddress(sourceBuffer, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferUnlockBaseAddress(newBuffer, 0);
+    
+    return newBuffer; // Caller should release this
+#else
+    return nil; // Use original buffer on real devices
+#endif
+}
+
 // IJKCVPBViewProtocol delegate
 // IJKFFMediaPlayer will incoke this method whem new frame should be displayed
 - (void)display_pixelbuffer:(CVPixelBufferRef)pixelbuffer {
@@ -306,14 +398,86 @@ static int renderType = 0;
     }
 }
 
-// After textureFrameAvailable has been called
-// Flutter engine call this to get new CVPixelBufferRef to render
+/**
+ * Copy pixel buffer for Flutter texture rendering
+ * Handles iOS Simulator specific pixel format processing for proper video display
+ */
 - (CVPixelBufferRef _Nullable)copyPixelBuffer {
     CVPixelBufferRef pixelBuffer = _latestPixelBuffer;
     while (!OSAtomicCompareAndSwapPtrBarrier(pixelBuffer, nil,
                                              (void **)&_latestPixelBuffer)) {
         pixelBuffer = _latestPixelBuffer;
     }
+
+#if TARGET_OS_SIMULATOR
+    if (!pixelBuffer) {
+        return NULL;
+    }
+
+    // Get pixel format and handle both BGRA and NV12
+    OSType pixelFormat = CVPixelBufferGetPixelFormatType(pixelBuffer);
+    
+    // For NV12 format, return directly 
+    if (pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+        return pixelBuffer;
+    }
+    
+    // Only process BGRA format for iOS Simulator stride issues
+    size_t width = CVPixelBufferGetWidth(pixelBuffer);
+    if (pixelFormat != kCVPixelFormatType_32BGRA) {
+        return pixelBuffer; // Return as-is for other formats
+    }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+    
+    size_t height = CVPixelBufferGetHeight(pixelBuffer);
+    size_t bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer);
+    size_t expectedBytesPerRow = width * 4; // 4 bytes per pixel for BGRA
+    
+    // If stride is already correct, return original
+    if (bytesPerRow == expectedBytesPerRow) {
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        return pixelBuffer;
+    }
+    
+    // Create new buffer with correct stride
+    NSDictionary *attributes = @{
+        (NSString *)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (NSString *)kCVPixelBufferWidthKey: @(width),
+        (NSString *)kCVPixelBufferHeightKey: @(height),
+        (NSString *)kCVPixelBufferBytesPerRowAlignmentKey: @(1)
+    };
+    
+    CVPixelBufferRef newBuffer = NULL;
+    CVReturn result = CVPixelBufferCreate(kCFAllocatorDefault, width, height,
+                                         kCVPixelFormatType_32BGRA, 
+                                         (__bridge CFDictionaryRef)attributes, 
+                                         &newBuffer);
+    
+    if (result == kCVReturnSuccess && newBuffer != NULL) {
+        CVPixelBufferLockBaseAddress(newBuffer, 0);
+        
+        uint8_t *sourceData = (uint8_t *)CVPixelBufferGetBaseAddress(pixelBuffer);
+        uint8_t *destData = (uint8_t *)CVPixelBufferGetBaseAddress(newBuffer);
+        size_t newBytesPerRow = CVPixelBufferGetBytesPerRow(newBuffer);
+        
+        // Copy data row by row
+        for (size_t row = 0; row < height; row++) {
+            memcpy(destData + row * newBytesPerRow,
+                   sourceData + row * bytesPerRow,
+                   expectedBytesPerRow);
+        }
+        
+        CVPixelBufferUnlockBaseAddress(newBuffer, 0);
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+        CVPixelBufferRelease(pixelBuffer);
+        
+        return newBuffer;
+    }
+    
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
+#endif
+    
     return pixelBuffer;
 }
 
