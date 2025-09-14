@@ -153,10 +153,9 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
     void setup() {
         if (mJustSurface)
             return;
-        if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
-            mIjkMediaPlayer.setAmcGlesRender();
-            mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
-        }
+        // Always enable snapshot support
+        mIjkMediaPlayer.setAmcGlesRender();
+        mIjkMediaPlayer.setOption(IjkMediaPlayer.OPT_CATEGORY_PLAYER, "overlay-format", "fcc-_es2");
     }
 
     long setupSurface() {
@@ -411,15 +410,47 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             // Create MediaMuxer for output
             mMediaMuxer = new MediaMuxer(path, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
 
-            // Create MediaCodec for H.264 encoding
+            // Create MediaCodec for H.264 encoding with higher quality
             MediaFormat format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, 
                 mWidth > 0 ? mWidth : 1280, mHeight > 0 ? mHeight : 720);
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-            format.setInteger(MediaFormat.KEY_BIT_RATE, 1000000); // 1Mbps
+            format.setInteger(MediaFormat.KEY_BIT_RATE, 5000000); // 5Mbps for better quality
             format.setInteger(MediaFormat.KEY_FRAME_RATE, 30);
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 5);
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2); // More frequent keyframes
 
             mMediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
+            
+            // Set up async callback for MediaCodec BEFORE configuring
+            mMediaCodec.setCallback(new MediaCodec.Callback() {
+                @Override
+                public void onInputBufferAvailable(MediaCodec codec, int index) {
+                    // Surface input, so this won't be called
+                }
+
+                @Override
+                public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+                    if (mIsRecording) {
+                        mRecordingHandler.post(() -> processEncodedData(codec, index, info));
+                    }
+                }
+
+                @Override
+                public void onError(MediaCodec codec, MediaCodec.CodecException e) {
+                    Log.e("FIJKPLAYER", "MediaCodec error", e);
+                    mMethodChannel.invokeMethod("_onRecordingError", e.getMessage());
+                }
+
+                @Override
+                public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+                    if (!mMuxerStarted) {
+                        mVideoTrackIndex = mMediaMuxer.addTrack(format);
+                        mMediaMuxer.start();
+                        mMuxerStarted = true;
+                        Log.d("FIJKPLAYER", "Muxer started with video track");
+                    }
+                }
+            });
+            
             mMediaCodec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
             
             // Get input surface for encoding
@@ -472,37 +503,6 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
                     }
                 });
             }
-
-            // Set up async callback for MediaCodec
-            mMediaCodec.setCallback(new MediaCodec.Callback() {
-                @Override
-                public void onInputBufferAvailable(MediaCodec codec, int index) {
-                    // Surface input, so this won't be called
-                }
-
-                @Override
-                public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
-                    if (mIsRecording) {
-                        mRecordingHandler.post(() -> processEncodedData(codec, index, info));
-                    }
-                }
-
-                @Override
-                public void onError(MediaCodec codec, MediaCodec.CodecException e) {
-                    Log.e("FIJKPLAYER", "MediaCodec error", e);
-                    mMethodChannel.invokeMethod("_onRecordingError", e.getMessage());
-                }
-
-                @Override
-                public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                    if (!mMuxerStarted) {
-                        mVideoTrackIndex = mMediaMuxer.addTrack(format);
-                        mMediaMuxer.start();
-                        mMuxerStarted = true;
-                        Log.d("FIJKPLAYER", "MediaMuxer started");
-                    }
-                }
-            }, mRecordingHandler);
 
             mRecordingPath = path;
             mIsRecording = true;
@@ -722,10 +722,11 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             mIjkMediaPlayer.setSpeed(speed != null ? speed.floatValue() : 1.0f);
             result.success(null);
         } else if (call.method.equals("snapshot")) {
-            if (mHostOptions.getIntOption(HostOption.ENABLE_SNAPSHOT, 0) > 0) {
+            // Force enable snapshot for this call
+            if (mIjkMediaPlayer != null) {
                 mIjkMediaPlayer.snapShot();
             } else {
-                mMethodChannel.invokeMethod("_onSnapshot", "not support");
+                mMethodChannel.invokeMethod("_onSnapshot", "Player not initialized");
             }
             result.success(null);
         } else if (call.method.equals("startRecording")) {
