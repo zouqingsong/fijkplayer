@@ -70,6 +70,8 @@ static atomic_int atomicId = 0;
     AVAssetWriterInputPixelBufferAdaptor *_pixelBufferAdaptor;
     BOOL _isRecording;
     NSString *_recordingPath;
+    CMTime _firstFrameTime;
+    BOOL _hasFirstFrame;
 }
 
 static const int idle = 0;
@@ -113,6 +115,11 @@ static int renderType = 0;
 
         _hostOption = [[FijkHostOption alloc] init];
         _lastBuffer = nil;
+        
+        // Initialize recording timing variables
+        _hasFirstFrame = NO;
+        _firstFrameTime = kCMTimeInvalid;
+        _isRecording = NO;
         if (renderType == 0) {
             _ijkMediaPlayer = [[IJKFFMediaPlayer alloc] init];
             [_ijkMediaPlayer setOptionValue:@"fcc-bgra"
@@ -379,20 +386,23 @@ static int renderType = 0;
     // Record frame if recording is active
     if (_isRecording && _writerInput && _pixelBufferAdaptor && _assetWriter) {
         if (_writerInput.readyForMoreMediaData) {
-            // Use a more accurate timestamp based on recording session time
-            static CMTime lastRecordedTime = {0};
-            CMTime currentTime = CMTimeMake([_ijkMediaPlayer getCurrentPosition], 1000);
+            CMTime frameTime;
             
-            // Ensure timestamps are monotonically increasing
-            if (CMTIME_IS_VALID(lastRecordedTime) && CMTimeCompare(currentTime, lastRecordedTime) <= 0) {
-                currentTime = CMTimeAdd(lastRecordedTime, CMTimeMake(33, 1000)); // ~30fps fallback
+            // Use the player's current position directly as presentation time
+            long currentPositionMs = [_ijkMediaPlayer getCurrentPosition];
+            frameTime = CMTimeMake(currentPositionMs, 1000); // Convert ms to CMTime
+            
+            // For the first frame during recording, start the session
+            if (!_hasFirstFrame) {
+                _hasFirstFrame = YES;
+                // Start the recording session with the first frame's timestamp
+                [_assetWriter startSessionAtSourceTime:frameTime];
+                NSLog(@"Recording session started at time: %f seconds", CMTimeGetSeconds(frameTime));
             }
             
-            BOOL success = [_pixelBufferAdaptor appendPixelBuffer:pixelbuffer withPresentationTime:currentTime];
-            if (success) {
-                lastRecordedTime = currentTime;
-            } else {
-                NSLog(@"Failed to append pixel buffer for recording at time: %f", CMTimeGetSeconds(currentTime));
+            BOOL success = [_pixelBufferAdaptor appendPixelBuffer:pixelbuffer withPresentationTime:frameTime];
+            if (!success) {
+                NSLog(@"Failed to append pixel buffer for recording at time: %f", CMTimeGetSeconds(frameTime));
             }
         }
     }
@@ -541,6 +551,12 @@ static int renderType = 0;
             @"old" : @(arg2),
         }];
         [self onStateChangedWithNew:arg1 andOld:arg2];
+        // Auto-stop recording if playback reaches completed or end state
+        if (_isRecording && (arg1 == completed || arg1 == end)) {
+            [self stopRecordingWithResult:^(id result) {
+                NSLog(@"Auto-stopped recording due to playback end. Result: %@", result);
+            }];
+        }
         break;
     case IJKMPET_VIDEO_RENDERING_START:
     case IJKMPET_AUDIO_RENDERING_START:
@@ -723,14 +739,17 @@ static int renderType = 0;
         return;
     }
     
-    // Configure video settings
+    // Configure video settings with higher quality
     NSDictionary *videoSettings = @{
         AVVideoCodecKey: AVVideoCodecTypeH264,
         AVVideoWidthKey: @(_width > 0 ? _width : 1280),
         AVVideoHeightKey: @(_height > 0 ? _height : 720),
         AVVideoCompressionPropertiesKey: @{
-            AVVideoAverageBitRateKey: @(1000000), // 1Mbps
-            AVVideoProfileLevelKey: AVVideoProfileLevelH264BaselineAutoLevel
+            AVVideoAverageBitRateKey: @(5000000), // 5Mbps for much better quality
+            AVVideoMaxKeyFrameIntervalKey: @(30), // Keyframe every 30 frames
+            AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel, // High profile for better compression
+            AVVideoH264EntropyModeKey: AVVideoH264EntropyModeCABAC, // Better entropy coding
+            AVVideoExpectedSourceFrameRateKey: @(30), // 30 fps
         }
     };
     
@@ -764,20 +783,28 @@ static int renderType = 0;
     
     // Start writing
     if ([_assetWriter startWriting]) {
-        [_assetWriter startSessionAtSourceTime:kCMTimeZero];
+        // Reset timing variables for each new recording
+        _hasFirstFrame = NO;
+        _firstFrameTime = kCMTimeInvalid;
         _isRecording = YES;
         _recordingPath = path;
+        
+        NSLog(@"Recording started to path: %@", path);
         
         // Notify Dart that recording started
         [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];
         result(nil);
     } else {
+        NSLog(@"Failed to start asset writer: %@", _assetWriter.error.localizedDescription);
         result([FlutterError errorWithCode:@"START_WRITING_FAILED"
                                    message:[NSString stringWithFormat:@"Failed to start writing: %@", _assetWriter.error.localizedDescription]
                                    details:nil]);
+        
+        // Clean up on failure
         _assetWriter = nil;
         _writerInput = nil;
         _pixelBufferAdaptor = nil;
+        _isRecording = NO;
     }
 }
 
@@ -789,29 +816,44 @@ static int renderType = 0;
         return;
     }
     
+    NSLog(@"Stopping recording...");
     _isRecording = NO;
     
     [_writerInput markAsFinished];
     [_assetWriter finishWritingWithCompletionHandler:^{
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self->_assetWriter.status == AVAssetWriterStatusCompleted) {
+                NSLog(@"Recording completed successfully to: %@", self->_recordingPath);
+                
+                // Log file info for debugging
+                NSError *error;
+                NSDictionary *fileAttributes = [[NSFileManager defaultManager] 
+                    attributesOfItemAtPath:self->_recordingPath error:&error];
+                if (fileAttributes) {
+                    NSNumber *fileSize = [fileAttributes objectForKey:NSFileSize];
+                    NSLog(@"Recorded file size: %@ bytes", fileSize);
+                }
+                
                 // Notify Dart that recording stopped
                 [self->_methodChannel invokeMethod:@"_onRecordingStopped" arguments:self->_recordingPath];
                 result(nil);
             } else {
                 NSString *errorMessage = self->_assetWriter.error ? 
                     self->_assetWriter.error.localizedDescription : @"Unknown error";
+                NSLog(@"Recording failed with error: %@", errorMessage);
                 [self->_methodChannel invokeMethod:@"_onRecordingError" arguments:errorMessage];
                 result([FlutterError errorWithCode:@"FINISH_WRITING_FAILED"
                                            message:[NSString stringWithFormat:@"Failed to finish writing: %@", errorMessage]
                                            details:nil]);
             }
             
-            // Clean up
+            // Clean up - ensure all variables are reset
             self->_assetWriter = nil;
             self->_writerInput = nil;
             self->_pixelBufferAdaptor = nil;
             self->_recordingPath = nil;
+            self->_hasFirstFrame = NO;
+            self->_firstFrameTime = kCMTimeInvalid;
         });
     }];
 }
