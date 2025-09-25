@@ -27,10 +27,8 @@ apply plugin: "kotlin-android"
 android {
     namespace 'com.befovy.fijkplayer'
     packagingOptions {
-        pickFirst 'lib/x86/libc++_shared.so'
-        pickFirst 'lib/x86_64/libc++_shared.so'
-        pickFirst 'lib/armeabi-v7a/libc++_shared.so'
-        pickFirst 'lib/arm64-v8a/libc++_shared.so'
+    pickFirst 'lib/armeabi-v7a/libc++_shared.so'
+    pickFirst 'lib/arm64-v8a/libc++_shared.so'
     }
 
     compileSdk = 34
@@ -43,8 +41,8 @@ android {
     defaultConfig {
         minSdk = 24
         ndk { 
-            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64' 
-        }        
+            abiFilters 'arm64-v8a', 'armeabi-v7a'
+        }
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
     lintOptions {
@@ -74,7 +72,7 @@ dependencies {
 
     // implementation(name: 'fijkplayer-full-release', ext: 'aar')
 
-    // fijkplayer-full include the java lib and native shared libs for armv5 armv7 arm64 x86 x86_64
+    // fijkplayer-full include the java lib and native shared libs for armv5 armv7 arm64
     implementation 'com.befovy.fijkplayer:fijkplayer-full:0.7.16'
     implementation 'androidx.annotation:annotation:1.2.0'
 }
