@@ -31,5 +31,13 @@ Flutter plugin for ijkplayer
   s.dependency 'BIJKPlayer', '~> 0.7.16'
 
   s.ios.deployment_target = '8.0'
+  
+  # Add FFmpeg header search paths for recording functionality
+  # These headers come from the ijkplayer iOS source build
+  ijkplayer_path = '/Users/qingsong/Documents/GitHub/ijkplayer/ios'
+  s.xcconfig = { 
+    'HEADER_SEARCH_PATHS' => "\"#{ijkplayer_path}/ffmpeg-arm64\" \"#{ijkplayer_path}/ffmpeg-x86_64\"",
+    'USER_HEADER_SEARCH_PATHS' => "\"#{ijkplayer_path}/ffmpeg-arm64\" \"#{ijkplayer_path}/ffmpeg-x86_64\""
+  }
 end
 
