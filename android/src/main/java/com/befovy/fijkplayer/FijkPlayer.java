@@ -734,8 +734,92 @@ public class FijkPlayer implements MethodChannel.MethodCallHandler, IjkEventList
             startRecording(path, result);
         } else if (call.method.equals("stopRecording")) {
             stopRecording(result);
+        } else if (call.method.equals("startFFmpegRecording")) {
+            final String path = call.argument("path");
+            startFFmpegRecording(path, result);
+        } else if (call.method.equals("stopFFmpegRecording")) {
+            stopFFmpegRecording(result);
+        } else if (call.method.equals("isFFmpegRecording")) {
+            result.success(nativeIsFFmpegRecording());
         } else {
             result.notImplemented();
+        }
+    }
+
+    // ===== FFmpeg Recording Methods =====
+    
+    // Load native library
+    static {
+        try {
+            // Load ijkffmpeg first (from fijkplayer-full AAR)
+            System.loadLibrary("ijkffmpeg");
+            // Then load our recorder library that depends on it
+            System.loadLibrary("fijkplayer_ffmpeg_recorder");
+            Log.d("FIJKPLAYER", "FFmpeg recorder library loaded successfully");
+        } catch (UnsatisfiedLinkError e) {
+            Log.e("FIJKPLAYER", "Failed to load FFmpeg recorder library", e);
+        }
+    }
+    
+    // Native methods
+    private native boolean nativeStartFFmpegRecording(String rtspUrl, String outputPath);
+    private native boolean nativeStopFFmpegRecording();
+    private native boolean nativeIsFFmpegRecording();
+    
+    // Java wrapper methods
+    private void startFFmpegRecording(String path, MethodChannel.Result result) {
+        if (path == null || path.isEmpty()) {
+            result.error("INVALID_PATH", "Recording path cannot be null or empty", null);
+            return;
+        }
+        
+        if (nativeIsFFmpegRecording()) {
+            result.error("RECORDING_IN_PROGRESS", "FFmpeg recording is already in progress", null);
+            return;
+        }
+        
+        // Get RTSP URL from current data source
+        String rtspUrl = null;
+        try {
+            if (mIjkMediaPlayer != null) {
+                rtspUrl = mIjkMediaPlayer.getDataSource();
+            }
+        } catch (Exception e) {
+            Log.e("FIJKPLAYER", "Failed to get data source", e);
+        }
+        
+        if (rtspUrl == null || rtspUrl.isEmpty()) {
+            result.error("NO_DATA_SOURCE", "No data source available for recording", null);
+            return;
+        }
+        
+        Log.d("FIJKPLAYER", "Starting FFmpeg recording from " + rtspUrl + " to " + path);
+        
+        boolean success = nativeStartFFmpegRecording(rtspUrl, path);
+        if (success) {
+            mMethodChannel.invokeMethod("_onRecordingStarted", null);
+            result.success(null);
+        } else {
+            mMethodChannel.invokeMethod("_onRecordingError", "Failed to start FFmpeg recording");
+            result.error("RECORDING_FAILED", "Failed to start FFmpeg recording", null);
+        }
+    }
+    
+    private void stopFFmpegRecording(MethodChannel.Result result) {
+        if (!nativeIsFFmpegRecording()) {
+            result.error("NO_RECORDING", "No FFmpeg recording in progress", null);
+            return;
+        }
+        
+        Log.d("FIJKPLAYER", "Stopping FFmpeg recording");
+        
+        boolean success = nativeStopFFmpegRecording();
+        if (success) {
+            mMethodChannel.invokeMethod("_onRecordingStopped", null);
+            result.success(null);
+        } else {
+            mMethodChannel.invokeMethod("_onRecordingError", "Failed to stop FFmpeg recording");
+            result.error("STOP_FAILED", "Failed to stop FFmpeg recording", null);
         }
     }
 }

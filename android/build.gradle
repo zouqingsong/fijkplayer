@@ -29,6 +29,11 @@ android {
     packagingOptions {
     pickFirst 'lib/armeabi-v7a/libc++_shared.so'
     pickFirst 'lib/arm64-v8a/libc++_shared.so'
+    // Exclude ijkffmpeg from CMake build output since it comes from fijkplayer-full AAR
+    exclude 'lib/armeabi-v7a/libijkffmpeg.so'
+    exclude 'lib/arm64-v8a/libijkffmpeg.so'
+    exclude 'lib/x86/libijkffmpeg.so'
+    exclude 'lib/x86_64/libijkffmpeg.so'
     }
 
     compileSdk = 34
@@ -44,6 +49,20 @@ android {
             abiFilters 'arm64-v8a', 'armeabi-v7a'
         }
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
+        
+        externalNativeBuild {
+            cmake {
+                cppFlags ""
+                arguments "-DANDROID_STL=c++_shared"
+            }
+        }
+    }
+    
+    externalNativeBuild {
+        cmake {
+            path "src/main/cpp/CMakeLists.txt"
+            version "3.22.1"
+        }
     }
     lintOptions {
         disable 'InvalidPackage'

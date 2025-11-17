@@ -337,6 +337,81 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     _isRecording = false;
   }
 
+  /// Start FFmpeg-based video recording to file
+  ///
+  /// This method uses FFmpeg to record the RTSP stream directly to a file,
+  /// which avoids the EGL context issues with the MediaCodec approach.
+  ///
+  /// [path] is the output file path where the video will be saved (MP4 format)
+  /// The video will be recorded without audio (video only)
+  ///
+  /// Example:
+  /// ```
+  /// await player.startFFmpegRecording('/path/to/output.mp4');
+  /// // ... recording in progress
+  /// await player.stopFFmpegRecording();
+  /// ```
+  Future<void> startFFmpegRecording(String path) async {
+    await _nativeSetup.future;
+    
+    // Check if already recording using the FFmpeg method
+    bool isAlreadyRecording = await _channel.invokeMethod("isFFmpegRecording");
+    if (isAlreadyRecording) {
+      return Future.error(StateError("FFmpeg recording is already in progress"));
+    }
+    
+    if (!isPlayable()) {
+      return Future.error(StateError("Player must be in playable state to start recording"));
+    }
+    
+    FijkLog.i("$this startFFmpegRecording to $path");
+    
+    var recording = Completer<void>();
+    _recording = recording;
+    
+    try {
+      await _channel.invokeMethod("startFFmpegRecording", <String, dynamic>{'path': path});
+      await recording.future;
+      FijkLog.i("$this FFmpeg recording started successfully");
+    } catch (e) {
+      _recording = null;
+      _isRecording = false;
+      rethrow;
+    }
+  }
+
+  /// Stop FFmpeg-based video recording
+  ///
+  /// This method stops the current FFmpeg recording session and finalizes the output file.
+  /// The recorded video file will be available at the path specified in [startFFmpegRecording].
+  ///
+  /// Example:
+  /// ```
+  /// await player.stopFFmpegRecording();
+  /// ```
+  Future<void> stopFFmpegRecording() async {
+    await _nativeSetup.future;
+    
+    // Check if there's an active FFmpeg recording
+    bool isCurrentlyRecording = await _channel.invokeMethod("isFFmpegRecording");
+    if (!isCurrentlyRecording) {
+      return Future.error(StateError("No FFmpeg recording in progress"));
+    }
+    
+    FijkLog.i("$this stopFFmpegRecording");
+    await _channel.invokeMethod("stopFFmpegRecording");
+    _recording = null;
+    _isRecording = false;
+  }
+
+  /// Check if FFmpeg recording is currently active
+  ///
+  /// Returns true if FFmpeg recording is in progress, false otherwise
+  Future<bool> isFFmpegRecording() async {
+    await _nativeSetup.future;
+    return await _channel.invokeMethod("isFFmpegRecording");
+  }
+
   /// Set data source for this player
   ///
   /// [path] must be a valid uri, otherwise this method return ArgumentError
