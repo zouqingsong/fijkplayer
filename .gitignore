@@ -19,3 +19,8 @@ doc/api/
 .classpath
 org.eclipse.buildship.core.prefs
 /android/.cxx
+/ffmpeg/output
+/ffmpeg/ffmpeg-*
+*.bak
+/ios/FFmpeg/
+/android/src/main/jniLibs/
