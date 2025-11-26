@@ -4,6 +4,7 @@ import 'app_bar.dart';
 import 'input_url.dart';
 import 'listview.dart';
 import 'local_path.dart';
+import 'native_player_test_page.dart';
 import 'recent_list.dart';
 
 class HomeItem extends StatelessWidget {
@@ -79,6 +80,13 @@ class HomeScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (context) => ListScreen()));
               },
               text: "List View",
+            ),
+            HomeItem(
+              onPressed: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (context) => NativePlayerTestPage()));
+              },
+              text: "🎯 Native Player Test",
             )
             /*
             Container(

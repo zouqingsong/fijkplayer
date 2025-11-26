@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:streaming_shared_preferences/streaming_shared_preferences.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 
 import 'app_bar.dart';
 import 'media_item.dart';
@@ -98,24 +99,24 @@ class RecentMediaList extends StatefulWidget {
 class _RecentMediaListState extends State<RecentMediaList> {
   int recentCount = 0;
   int newestId = 0;
-  late StreamingSharedPreferences prefs;
+  SharedPreferences? prefs;
   ScrollController _controller = ScrollController();
 
-  _RecentMediaListState() {
+  @override
+  void initState() {
+    super.initState();
     asyncSetup();
   }
 
   asyncSetup() async {
-    prefs = await StreamingSharedPreferences.instance;
-
-    Preference<int> counter = prefs.getInt('recent_count', defaultValue: 0);
-    counter.listen(onHistoryChanged);
+    prefs = await SharedPreferences.getInstance();
+    loadHistory();
   }
 
-  onHistoryChanged(int v) {
-    int count = prefs.getInt("recent_count", defaultValue: 0).getValue();
-    int newest = prefs.getInt("recent_newest", defaultValue: 0).getValue();
-    _controller.jumpTo(0);
+  loadHistory() {
+    if (prefs == null) return;
+    int count = prefs!.getInt("recent_count") ?? 0;
+    int newest = prefs!.getInt("recent_newest") ?? 0;
     setState(() {
       recentCount = count;
       newestId = newest;
@@ -124,39 +125,45 @@ class _RecentMediaListState extends State<RecentMediaList> {
 
   @override
   Widget build(BuildContext context) {
+    if (prefs == null) {
+      return Center(child: CircularProgressIndicator());
+    }
+    
     return ListView.builder(
         controller: _controller,
         itemCount: recentCount > 20 ? 20 : recentCount,
         itemBuilder: (BuildContext context, int index) {
           index = ((newestId + 20) - index) % 20;
           final key = "recentid" + index.toString();
-          MediaUrl item = prefs
-              .getCustomValue<MediaUrl>(key,
-                  defaultValue: MediaUrl(url: ""),
-                  adapter: JsonAdapter(
-                    deserializer: (value) =>
-                        MediaUrl.fromJson(value as Map<String, dynamic>),
-                  ))
-              .getValue();
+          String? jsonStr = prefs!.getString(key);
+          MediaUrl item = MediaUrl(url: "");
+          if (jsonStr != null && jsonStr.isNotEmpty) {
+            try {
+              item = MediaUrl.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
+            } catch (e) {
+              // If parsing fails, use default empty MediaUrl
+            }
+          }
           return MediaItem(mediaUrl: item);
         });
   }
 }
 
 Future<void> addToHistory(MediaUrl mediaUrl) async {
-  StreamingSharedPreferences prefs = await StreamingSharedPreferences.instance;
-  int newest = prefs.getInt("recent_newest", defaultValue: 0).getValue();
-  int count = prefs.getInt("recent_count", defaultValue: 0).getValue();
+  SharedPreferences prefs = await SharedPreferences.getInstance();
+  int newest = prefs.getInt("recent_newest") ?? 0;
+  int count = prefs.getInt("recent_count") ?? 0;
 
   if (count > 0) {
-    MediaUrl theNewest = prefs
-        .getCustomValue<MediaUrl>("recentid" + newest.toString(),
-            defaultValue: MediaUrl(url: ""),
-            adapter: JsonAdapter(
-              deserializer: (value) =>
-                  MediaUrl.fromJson(value as Map<String, dynamic>),
-            ))
-        .getValue();
+    String? jsonStr = prefs.getString("recentid" + newest.toString());
+    MediaUrl theNewest = MediaUrl(url: "");
+    if (jsonStr != null && jsonStr.isNotEmpty) {
+      try {
+        theNewest = MediaUrl.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
+      } catch (e) {
+        // If parsing fails, use default empty MediaUrl
+      }
+    }
 
     if (theNewest.url != mediaUrl.url) {
       newest = (newest + 1) % 20;
@@ -171,11 +178,6 @@ Future<void> addToHistory(MediaUrl mediaUrl) async {
   if (newest >= 0) {
     await prefs.setInt("recent_count", count);
     await prefs.setInt("recent_newest", newest);
-    await prefs.setCustomValue<MediaUrl>(
-        "recentid" + newest.toString(), mediaUrl,
-        adapter: JsonAdapter(
-          deserializer: (value) =>
-              MediaUrl.fromJson(value as Map<String, dynamic>),
-        ));
+    await prefs.setString("recentid" + newest.toString(), jsonEncode(mediaUrl.toJson()));
   }
 }
