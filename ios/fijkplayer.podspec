@@ -12,8 +12,8 @@ Flutter plugin for ijkplayer
   s.license          = { :file => '../LICENSE' }
   s.author           = { 'befovy' => 'befovy@gmail.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*'
-  s.public_header_files = 'Classes/**/*.h'
+  s.source_files = 'Classes/**/*', 'NativePlayer/**/*'
+  s.public_header_files = 'Classes/**/*.h', 'NativePlayer/**/*.h'
 
   s.static_framework = true
 
@@ -23,21 +23,28 @@ Flutter plugin for ijkplayer
   # s.vendored_frameworks = 'Frameworks/IJKMediaPlayer.framework'
   # s.xcconfig = { 'LD_RUNPATH_SEARCH_PATHS' => '"$(PODS_ROOT)/Frameworks/"' }
 
-  s.libraries = "bz2", "z", "stdc++"
+  s.libraries = "bz2", "z", "stdc++", "c++"
   s.dependency 'Flutter'
 
-  # s.use_frameworks!
+  # Use vendored FFmpeg frameworks for native player
+  s.vendored_frameworks = 'Frameworks/libavcodec.framework', 'Frameworks/libavformat.framework', 'Frameworks/libavutil.framework', 'Frameworks/libswscale.framework', 'Frameworks/libswresample.framework'
 
-  s.dependency 'BIJKPlayer', '~> 0.7.16'
+  # BIJKPlayer dependency (OPTIONAL)
+  # Comment out to use ONLY the new FFmpeg-based native player
+  # Uncomment if you need the legacy FijkPlayer class (befovy.com/fijk channel)
+  # Note: Adds ~15MB to app size
+  # s.dependency 'BIJKPlayer', '~> 0.7.16'
 
-  s.ios.deployment_target = '8.0'
+  s.ios.deployment_target = '9.0'
   
-  # Add FFmpeg header search paths for recording functionality
-  # These headers come from the ijkplayer iOS source build
-  ijkplayer_path = '/Users/qingsong/Documents/GitHub/ijkplayer/ios'
+  # FFmpeg header search paths for native player
   s.xcconfig = { 
-    'HEADER_SEARCH_PATHS' => "\"#{ijkplayer_path}/ffmpeg-arm64\" \"#{ijkplayer_path}/ffmpeg-x86_64\"",
-    'USER_HEADER_SEARCH_PATHS' => "\"#{ijkplayer_path}/ffmpeg-arm64\" \"#{ijkplayer_path}/ffmpeg-x86_64\""
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/include" "$(PODS_TARGET_SRCROOT)/Frameworks/libavcodec.framework/Headers" "$(PODS_TARGET_SRCROOT)/Frameworks/libavformat.framework/Headers" "$(PODS_TARGET_SRCROOT)/Frameworks/libavutil.framework/Headers"',
+    'USER_HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/include"',
+    'CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES' => 'YES'
   }
+  
+  # System frameworks needed for native player
+  s.frameworks = 'VideoToolbox', 'CoreVideo', 'CoreMedia', 'CoreFoundation', 'AudioToolbox', 'AVFoundation', 'Accelerate'
 end
 

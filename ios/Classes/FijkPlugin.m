@@ -22,11 +22,11 @@
 
 #import "FijkPlugin.h"
 #import "FijkPlayer.h"
+#import "FJKNativePlayerHandler.h"
 #import "FijkQueuingEventSink.h"
 
 #import <AVKit/AVKit.h>
 #import <Flutter/Flutter.h>
-#import <IJKMediaPlayer/IJKMediaPlayer.h>
 #import <MediaPlayer/MediaPlayer.h>
 
 typedef NS_ENUM(int, FijkVoUIMode) {
@@ -67,6 +67,13 @@ static FijkPlugin *_instance = nil;
     int64_t vid = [[registrar textures] registerTexture:player];
     [player shutdown];
     [[registrar textures] unregisterTexture:vid];
+    
+    // Register native player handler
+    FlutterMethodChannel *nativeChannel =
+        [FlutterMethodChannel methodChannelWithName:@"befovy.com/fijk/native_player_test"
+                                    binaryMessenger:[registrar messenger]];
+    FJKNativePlayerHandler *nativeHandler = [[FJKNativePlayerHandler alloc] initWithTextureRegistry:[registrar textures]];
+    [registrar addMethodCallDelegate:nativeHandler channel:nativeChannel];
 }
 
 + (FijkPlugin *)singleInstance {
@@ -128,7 +135,9 @@ static FijkPlugin *_instance = nil;
         int l = [level intValue] / 100;
         l = l < 0 ? 0 : l;
         l = l > 8 ? 8 : l;
-        [IJKFFMoviePlayerController setLogLevel:l];
+        // Log level control for native player
+        // TODO: Implement native player log level control
+        NSLog(@"[FijkPlugin] Set log level: %d", l);
         result(nil);
     } else if ([@"setOrientationPortrait" isEqualToString:call.method]) {
         UIInterfaceOrientationMask mask = [[UIApplication sharedApplication]
