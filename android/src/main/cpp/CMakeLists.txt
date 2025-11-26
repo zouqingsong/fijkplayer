@@ -5,6 +5,13 @@ project(fijkplayer_ffmpeg_recorder)
 # Set C standard
 set(CMAKE_C_STANDARD 99)
 
+# Support 16KB page sizes for Android 15+
+# https://developer.android.com/guide/practices/page-sizes
+if(ANDROID)
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
+endif()
+
 # Add FFmpeg recorder source
 add_library(fijkplayer_ffmpeg_recorder SHARED
     ffmpeg_recorder.c
