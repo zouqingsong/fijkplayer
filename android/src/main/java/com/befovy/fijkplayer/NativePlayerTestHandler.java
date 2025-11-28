@@ -77,6 +77,9 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             case "release":
                 handleRelease(result);
                 break;
+            case "testHttpsConnectivity":
+                handleTestHttpsConnectivity(call, result);
+                break;
             default:
                 result.notImplemented();
         }
@@ -327,6 +330,37 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             Log.e(TAG, "Failed to release", e);
             result.error("RELEASE_FAILED", e.getMessage(), null);
         }
+    }
+    
+    private void handleTestHttpsConnectivity(MethodCall call, MethodChannel.Result result) {
+        String testUrl = call.argument("url");
+        if (testUrl == null) {
+            testUrl = "https://httpbin.org/get";
+        }
+        
+        Log.i(TAG, "Testing HTTPS connectivity to: " + testUrl);
+        
+        // Run network operation on background thread to avoid NetworkOnMainThreadException
+        new Thread(() -> {
+            try {
+                java.net.URL url = new java.net.URL(testUrl);
+                java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
+                connection.setRequestMethod("HEAD");
+                connection.setConnectTimeout(5000); // 5 second timeout
+                connection.setReadTimeout(5000);
+                
+                int responseCode = connection.getResponseCode();
+                connection.disconnect();
+                
+                boolean success = responseCode == 200;
+                Log.i(TAG, "HTTPS test result: " + responseCode + " (success: " + success + ")");
+                result.success(success);
+                
+            } catch (Exception e) {
+                Log.e(TAG, "HTTPS connectivity test failed", e);
+                result.success(false); // Return false instead of error for connectivity issues
+            }
+        }).start();
     }
     
     private void onPlayerEvent(int eventType, int arg1, int arg2) {

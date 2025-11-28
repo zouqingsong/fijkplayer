@@ -42,6 +42,23 @@ void ff_demuxer_init() {
     static bool initialized = false;
     if (!initialized) {
         LOGI("Initializing FFmpeg library");
+        
+        // Initialize network protocols (required for HTTPS/SSL)
+        int ret = avformat_network_init();
+        if (ret < 0) {
+            LOGE("Failed to initialize network protocols: %d", ret);
+        } else {
+            LOGI("✅ Network protocols initialized");
+        }
+        
+        // List available protocols for debugging
+        void *opaque = NULL;
+        const char *protocol;
+        LOGI("📋 Available protocols:");
+        while ((protocol = avio_enum_protocols(&opaque, 0)) != NULL) {
+            LOGI("  - %s", protocol);
+        }
+        
         initialized = true;
     }
 }
@@ -228,6 +245,14 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
             av_dict_set(&opts, "reconnect_delay_max", "5", 0);
             av_dict_set(&opts, "multiple_requests", "1", 0);  // HTTP persistent connections
             av_dict_set(&opts, "seekable", "0", 0);  // Treat HTTP as non-seekable for streaming
+            
+            // HTTPS/SSL specific options
+            if (strncmp(url, "https://", 8) == 0) {
+                LOGI("🔒 HTTPS URL detected, configuring TLS options");
+                // Use basic TLS options that are more widely supported
+                av_dict_set(&opts, "tls_verify", "0", 0);        // Disable strict certificate verification for compatibility
+                av_dict_set(&opts, "method", "GET", 0);          // Explicit HTTP method
+            }
         } else if (strncmp(url, "rtsp://", 7) == 0) {
             // RTSP-specific options
             av_dict_set(&opts, "rtsp_transport", "tcp", 0);

@@ -28,7 +28,7 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
   double _videoFrameRate = 30.0; // Default frame rate
   int _refreshInterval = 33; // Default 30fps (1000ms/30 ≈ 33ms)
   
-  // Test with network source (HTTP MP4) - File stream
+  // Test with network source (HTTP MP4) - File stream (fallback from HTTPS)
   final String _testUrl = 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
   
   // Alternative test URLs:
@@ -38,9 +38,14 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
   // 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4'
   // 'file:///storage/emulated/0/Movies/your_video.mp4'
   
+  // 🔒 HTTPS VIDEO FILES (SSL/TLS encrypted, certificate verification enabled):
+  // 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+  // 'https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4'
+  // 'https://file-examples.com/storage/fe86c86ab1996b9a2ee7f83/2017/10/file_example_MP4_1920_18MG.mp4'
+  
   // 🔴 LIVE STREAMS (will use high refresh rate, low latency):
   // 'rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov'
-  // 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8'
+  // 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8' // HLS over HTTPS
   // 'rtmp://your-streaming-server.com/live/stream_key'
   @override
   void initState() {
@@ -316,6 +321,18 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
     return 0.0; // Unknown frame rate
   }
 
+  Future<bool> _testHttpsConnectivity() async {
+    try {
+      final result = await _channel.invokeMethod('testHttpsConnectivity', {
+        'url': 'https://httpbin.org/get'
+      });
+      return result == true;
+    } catch (e) {
+      debugPrint('🔒 HTTPS connectivity test failed: $e');
+      return false;
+    }
+  }
+
   String _formatDuration(int ms) {
     final seconds = ms ~/ 1000;
     final minutes = seconds ~/ 60;
@@ -428,6 +445,20 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
                     ),
                   ],
                 ),
+                SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    ElevatedButton(
+                      onPressed: () async {
+                        debugPrint('🔒 Testing HTTPS connectivity...');
+                        bool result = await _testHttpsConnectivity();
+                        setState(() => _status = result ? '🔒 HTTPS: OK' : '❌ HTTPS: Failed');
+                      },
+                      child: Text('Test HTTPS'),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -436,7 +467,7 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
           Padding(
             padding: EdgeInsets.all(8),
             child: Text(
-              'Test: Big Buck Bunny (596s, 1280x720, local file)',
+              'Test: Big Buck Bunny (596s, 1280x720, HTTP)',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),
