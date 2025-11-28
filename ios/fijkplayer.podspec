@@ -27,7 +27,7 @@ Flutter plugin for ijkplayer
   s.dependency 'Flutter'
 
   # Use vendored FFmpeg frameworks for native player
-  s.vendored_frameworks = 'Frameworks/libavcodec.framework', 'Frameworks/libavformat.framework', 'Frameworks/libavutil.framework', 'Frameworks/libswscale.framework', 'Frameworks/libswresample.framework'
+  s.vendored_frameworks = 'Frameworks/libavcodec.framework', 'Frameworks/libavformat.framework', 'Frameworks/libavutil.framework'
 
   # BIJKPlayer dependency (OPTIONAL)
   # Comment out to use ONLY the new FFmpeg-based native player

@@ -10,9 +10,7 @@ dependencies:
     sdk: flutter
 
   # streaming_shared_preferences: ^2.0.0  # Commented out for native player testing
-  shared_preferences: 2.5.3
-  shared_preferences_android: 2.4.10
-  shared_preferences_foundation: 2.5.3  # Required for iOS
+  # shared_preferences: ^2.3.2  # Temporarily disabled due to iOS linking bug
   permission_handler: ^11.3.0
 
   # The following adds the Cupertino Icons font to your application.

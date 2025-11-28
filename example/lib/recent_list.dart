@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+// import 'package:shared_preferences/shared_preferences.dart';  // Temporarily disabled
 import 'dart:convert';
 
 import 'app_bar.dart';
@@ -99,7 +99,7 @@ class RecentMediaList extends StatefulWidget {
 class _RecentMediaListState extends State<RecentMediaList> {
   int recentCount = 0;
   int newestId = 0;
-  SharedPreferences? prefs;
+  // SharedPreferences? prefs;  // Temporarily disabled
   ScrollController _controller = ScrollController();
 
   @override
@@ -109,75 +109,37 @@ class _RecentMediaListState extends State<RecentMediaList> {
   }
 
   asyncSetup() async {
-    prefs = await SharedPreferences.getInstance();
+    // prefs = await SharedPreferences.getInstance();
     loadHistory();
   }
 
   loadHistory() {
-    if (prefs == null) return;
-    int count = prefs!.getInt("recent_count") ?? 0;
-    int newest = prefs!.getInt("recent_newest") ?? 0;
+    // Temporarily disabled due to SharedPreferences iOS linking bug
     setState(() {
-      recentCount = count;
-      newestId = newest;
+      recentCount = 0;
+      newestId = 0;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (prefs == null) {
-      return Center(child: CircularProgressIndicator());
+    // Show empty state when SharedPreferences is disabled
+    if (recentCount == 0) {
+      return Center(
+        child: Text(
+          'Recent list temporarily disabled\nUse video_page to test native player',
+          textAlign: TextAlign.center,
+        ),
+      );
     }
     
-    return ListView.builder(
-        controller: _controller,
-        itemCount: recentCount > 20 ? 20 : recentCount,
-        itemBuilder: (BuildContext context, int index) {
-          index = ((newestId + 20) - index) % 20;
-          final key = "recentid" + index.toString();
-          String? jsonStr = prefs!.getString(key);
-          MediaUrl item = MediaUrl(url: "");
-          if (jsonStr != null && jsonStr.isNotEmpty) {
-            try {
-              item = MediaUrl.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
-            } catch (e) {
-              // If parsing fails, use default empty MediaUrl
-            }
-          }
-          return MediaItem(mediaUrl: item);
-        });
+    // Dead code - never reached since recentCount is always 0
+    return Center(child: Text('No recent videos'));
   }
 }
 
 Future<void> addToHistory(MediaUrl mediaUrl) async {
-  SharedPreferences prefs = await SharedPreferences.getInstance();
-  int newest = prefs.getInt("recent_newest") ?? 0;
-  int count = prefs.getInt("recent_count") ?? 0;
-
-  if (count > 0) {
-    String? jsonStr = prefs.getString("recentid" + newest.toString());
-    MediaUrl theNewest = MediaUrl(url: "");
-    if (jsonStr != null && jsonStr.isNotEmpty) {
-      try {
-        theNewest = MediaUrl.fromJson(jsonDecode(jsonStr) as Map<String, dynamic>);
-      } catch (e) {
-        // If parsing fails, use default empty MediaUrl
-      }
-    }
-
-    if (theNewest.url != mediaUrl.url) {
-      newest = (newest + 1) % 20;
-      count += 1;
-    } else {
-      newest = -1;
-    }
-  } else {
-    count += 1;
-  }
-
-  if (newest >= 0) {
-    await prefs.setInt("recent_count", count);
-    await prefs.setInt("recent_newest", newest);
-    await prefs.setString("recentid" + newest.toString(), jsonEncode(mediaUrl.toJson()));
-  }
+  // Temporarily disabled due to SharedPreferences iOS linking bug
+  return;
 }
+

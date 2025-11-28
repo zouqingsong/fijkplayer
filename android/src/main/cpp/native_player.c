@@ -482,6 +482,37 @@ int64_t native_player_get_duration(NativePlayer* player) {
     return duration / 1000;  // Convert to milliseconds
 }
 
+double native_player_get_frame_rate(NativePlayer* player) {
+    if (!player) return 0.0;
+    
+    // Thread-safe read with mutex
+    pthread_mutex_lock(&player->state_mutex);
+    double frame_rate = player->stats.fps;
+    pthread_mutex_unlock(&player->state_mutex);
+    
+    // If frame rate is not available or invalid, estimate based on resolution
+    if (frame_rate <= 0.0) {
+        int width = player->stats.video_width;
+        int height = player->stats.video_height;
+        
+        // Common frame rate estimates based on resolution
+        if (height >= 1080) {
+            frame_rate = 25.0;  // HD content often 25fps
+        } else if (height >= 720) {
+            frame_rate = 24.0;  // Standard cinema rate
+        } else {
+            frame_rate = 23.976; // True cinema rate for SD
+        }
+        
+        LOGD("Estimated frame rate: %.3f fps (resolution: %dx%d)", 
+             frame_rate, width, height);
+    } else {
+        LOGD("Actual frame rate: %.3f fps", frame_rate);
+    }
+    
+    return frame_rate;
+}
+
 int native_player_get_video_width(NativePlayer* player) {
     return player ? player->stats.video_width : 0;
 }

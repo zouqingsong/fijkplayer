@@ -165,6 +165,14 @@ JNI_METHOD(nativeGetDuration)(JNIEnv* env, jobject thiz, jlong handle) {
     return native_player_get_duration(player);
 }
 
+JNIEXPORT jdouble JNICALL
+JNI_METHOD(nativeGetFrameRate)(JNIEnv* env, jobject thiz, jlong handle) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return 0.0;
+    
+    return native_player_get_frame_rate(player);
+}
+
 JNIEXPORT jint JNICALL
 JNI_METHOD(nativeGetVideoWidth)(JNIEnv* env, jobject thiz, jlong handle) {
     NativePlayer* player = (NativePlayer*)handle;

@@ -4,15 +4,11 @@ PODS:
   - Flutter (1.0.0)
   - permission_handler_apple (9.3.0):
     - Flutter
-  - shared_preferences_foundation (0.0.1):
-    - Flutter
-    - FlutterMacOS
 
 DEPENDENCIES:
   - fijkplayer (from `.symlinks/plugins/fijkplayer/ios`)
   - Flutter (from `Flutter`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
-  - shared_preferences_foundation (from `.symlinks/plugins/shared_preferences_foundation/darwin`)
 
 EXTERNAL SOURCES:
   fijkplayer:
@@ -21,15 +17,12 @@ EXTERNAL SOURCES:
     :path: Flutter
   permission_handler_apple:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
-  shared_preferences_foundation:
-    :path: ".symlinks/plugins/shared_preferences_foundation/darwin"
 
 SPEC CHECKSUMS:
-  fijkplayer: ecd3986abd15b4560b624d6d3dbf70bcbccbad50
+  fijkplayer: 1ec97b93be9aad36cf421a7d54461495b62f3e13
   Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
-  shared_preferences_foundation: 9e1978ff2562383bd5676f64ec4e9aa8fa06a6f7
 
-PODFILE CHECKSUM: cf0c950f7e9a456b4e325f5b8fc0f98906a3705a
+PODFILE CHECKSUM: 5794abacff39ca3f8293093c0fa6a12f85244708
 
 COCOAPODS: 1.16.2

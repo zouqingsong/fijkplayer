@@ -65,6 +65,9 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             case "getDuration":
                 handleGetDuration(result);
                 break;
+            case "getFrameRate":
+                handleGetFrameRate(result);
+                break;
             case "getVideoSize":
                 handleGetVideoSize(result);
                 break;
@@ -250,6 +253,21 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
         } catch (Exception e) {
             Log.e(TAG, "Failed to get duration", e);
             result.error("GET_DURATION_FAILED", e.getMessage(), null);
+        }
+    }
+    
+    private void handleGetFrameRate(MethodChannel.Result result) {
+        if (player == null) {
+            result.error("NO_PLAYER", "Player not created", null);
+            return;
+        }
+        
+        try {
+            double frameRate = player.getFrameRate();
+            result.success(frameRate);
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to get frame rate", e);
+            result.error("GET_FRAMERATE_FAILED", e.getMessage(), null);
         }
     }
     

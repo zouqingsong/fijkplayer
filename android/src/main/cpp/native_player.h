@@ -190,12 +190,20 @@ int native_player_seek(NativePlayer* player, int64_t position_ms);
 int64_t native_player_get_position(NativePlayer* player);
 
 /**
- * Get total duration
+ * Get media duration
  * 
  * @param player Player handle
  * @return Duration in milliseconds
  */
 int64_t native_player_get_duration(NativePlayer* player);
+
+/**
+ * Get video frame rate
+ * 
+ * @param player Player handle
+ * @return Frame rate in fps (frames per second)
+ */
+double native_player_get_frame_rate(NativePlayer* player);
 
 /**
  * Get video width

@@ -39,6 +39,9 @@ typedef NS_ENUM(NSInteger, FJKPlayerEvent) {
 // Event callback block
 typedef void (^FJKPlayerEventCallback)(FJKPlayerEvent event, NSInteger arg1, NSInteger arg2);
 
+// Frame callback block (called when new frame is rendered)
+typedef void (^FJKPlayerFrameCallback)(void);
+
 /**
  * Native iOS Player
  * 
@@ -67,6 +70,9 @@ typedef void (^FJKPlayerEventCallback)(FJKPlayerEvent event, NSInteger arg1, NSI
 
 /// Event callback
 @property (nonatomic, copy, nullable) FJKPlayerEventCallback eventCallback;
+
+/// Frame callback (called when new frame is available)
+@property (nonatomic, copy, nullable) FJKPlayerFrameCallback frameCallback;
 
 /**
  * Initialize player

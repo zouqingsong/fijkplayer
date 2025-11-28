@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -19,15 +20,28 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
   int _position = 0;
   bool _isPlaying = false;
   
-  // Test with local file - focus on FFmpeg integration first
-  final String _testUrl = 'file:///storage/emulated/0/Movies/bbb_sunflower_1080p_60fps_normal.mp4';
+  Timer? _positionTimer; // Use timer instead of recursive calls
+  Timer? _refreshTimer; // Separate timer for UI refreshes
   
-  // Network streams for future testing:
-  // RTSP: 'rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov' (connection timeout)
-  // HTTP MP4: 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+  // Adaptive timing variables
+  bool _isLiveStream = false;
+  double _videoFrameRate = 30.0; // Default frame rate
+  int _refreshInterval = 33; // Default 30fps (1000ms/30 ≈ 33ms)
   
-  // For HLS testing:
-  // final String _testUrl = 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8';
+  // Test with network source (HTTP MP4) - File stream
+  final String _testUrl = 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+  
+  // Alternative test URLs:
+  
+  // 📁 VIDEO FILES (will use actual fps, lower UI refresh):
+  // 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
+  // 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4'
+  // 'file:///storage/emulated/0/Movies/your_video.mp4'
+  
+  // 🔴 LIVE STREAMS (will use high refresh rate, low latency):
+  // 'rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov'
+  // 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8'
+  // 'rtmp://your-streaming-server.com/live/stream_key'
   @override
   void initState() {
     super.initState();
@@ -37,6 +51,8 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
   
   @override
   void dispose() {
+    _stopPositionTimer();
+    _stopRefreshTimer();
     _releasePlayer();
     super.dispose();
   }
@@ -83,6 +99,37 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
       final height = info['height'] as int;
       final duration = info['duration'] as int;
       
+      // Detect stream type and adapt timing
+      _isLiveStream = _isLiveStreamUrl(_testUrl) || (duration == 0);
+      
+      // Get actual frame rate for video files
+      if (_isLiveStream) {
+        _videoFrameRate = 30.0; // Common for live streams
+        _refreshInterval = 16;  // High refresh rate for live (~60fps UI)
+      } else {
+        // For video files, get the actual frame rate
+        double actualFps = await _getActualFrameRate();
+        if (actualFps > 0) {
+          _videoFrameRate = actualFps;
+          debugPrint('🎬 Detected actual frame rate: ${actualFps}fps');
+        } else {
+          // Fallback to conservative estimates
+          if (height >= 1080) {
+            _videoFrameRate = 25.0; // Common for HD content
+          } else if (height >= 720) {
+            _videoFrameRate = 24.0; // Standard cinema rate
+          } else {
+            _videoFrameRate = 23.976; // True cinema rate for SD
+          }
+          debugPrint('📐 Using estimated frame rate: ${_videoFrameRate}fps');
+        }
+        // Use much slower refresh timing for video files to prevent fast playback
+        // Video files don't need fast UI refresh - they need proper pacing
+        int calculatedInterval = (1000 / _videoFrameRate * 2.5).round();
+        _refreshInterval = calculatedInterval < 100 ? 100 : calculatedInterval; // Minimum 100ms, 2.5x slower than video fps
+        debugPrint('⏱️ Video refresh interval: ${_refreshInterval}ms (${(1000/_refreshInterval).toStringAsFixed(1)}fps UI refresh)');
+      }
+      
       setState(() {
         _videoWidth = width;
         _videoHeight = height;
@@ -91,6 +138,7 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
       });
       
       debugPrint('✅ Player prepared: ${width}x$height, duration: $duration ms');
+      debugPrint('📺 Stream detected: Live=$_isLiveStream, FPS=$_videoFrameRate, RefreshInterval=${_refreshInterval}ms');
     } catch (e) {
       setState(() => _status = 'Prepare failed: $e');
       debugPrint('❌ Failed to prepare: $e');
@@ -107,7 +155,10 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
       });
       
       // Start position updates
-      _updatePosition();
+      _startPositionTimer();
+      
+      // Start UI refresh timer for smooth video display
+      _startRefreshTimer();
       
       debugPrint('✅ Playback started');
     } catch (e) {
@@ -125,6 +176,9 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
         _status = 'Paused';
       });
       
+      _stopPositionTimer(); // Stop position updates
+      _stopRefreshTimer(); // Stop UI refresh timer
+      
       debugPrint('✅ Playback paused');
     } catch (e) {
       setState(() => _status = 'Pause failed: $e');
@@ -141,6 +195,9 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
         _position = 0;
         _status = 'Stopped';
       });
+      
+      _stopPositionTimer(); // Stop position updates
+      _stopRefreshTimer(); // Stop UI refresh timer
       
       debugPrint('✅ Playback stopped');
     } catch (e) {
@@ -160,21 +217,82 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
     }
   }
   
-  Future<void> _updatePosition() async {
-    if (!_isPlaying) return;
+  void _startPositionTimer() {
+    _positionTimer?.cancel();
+    _positionTimer = Timer.periodic(Duration(seconds: 2), (timer) async {
+      if (!_isPlaying) {
+        timer.cancel();
+        return;
+      }
+      
+      try {
+        final position = await _channel.invokeMethod('getPosition') as int;
+        if (mounted) {
+          setState(() => _position = position);
+        }
+      } catch (e) {
+        debugPrint('Failed to get position: $e');
+      }
+    });
+  }
+  
+  void _stopPositionTimer() {
+    _positionTimer?.cancel();
+    _positionTimer = null;
+  }
+  
+  void _startRefreshTimer() {
+    _refreshTimer?.cancel();
     
-    try {
-      final position = await _channel.invokeMethod('getPosition') as int;
-      setState(() => _position = position);
-    } catch (e) {
-      debugPrint('Failed to get position: $e');
+    // Adaptive refresh rate based on stream type
+    int interval;
+    if (_isLiveStream) {
+      // Live streams: high refresh rate for low latency
+      interval = 16; // ~60fps for responsiveness
+    } else {
+      // Video files: match video frame rate
+      interval = _refreshInterval;
     }
     
-    // Update every 500ms
-    if (_isPlaying) {
-      await Future.delayed(Duration(milliseconds: 500));
-      _updatePosition();
+    _refreshTimer = Timer.periodic(Duration(milliseconds: interval), (timer) {
+      // Trigger UI refresh for smooth video display
+      if (!_isPlaying) {
+        timer.cancel();
+        return;
+      }
+      
+      if (mounted) {
+        // Force UI rebuild to check for texture updates
+        setState(() {});
+      }
+    });
+    
+    debugPrint('🔄 Refresh timer started: ${interval}ms (${(1000/interval).toStringAsFixed(1)}fps) - Live: $_isLiveStream');
+  }
+  
+  void _stopRefreshTimer() {
+    _refreshTimer?.cancel();
+    _refreshTimer = null;
+  }
+  
+  bool _isLiveStreamUrl(String url) {
+    // Check for live streaming protocols
+    if (url.startsWith('rtsp://') || 
+        url.startsWith('rtmp://') ||
+        url.startsWith('rtp://')) {
+      return true;
     }
+    
+    // Check for live streaming formats in HTTP URLs
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      if (url.contains('.m3u8') || // HLS
+          url.contains('/live/') ||
+          url.contains('live=')) {
+        return true;
+      }
+    }
+    
+    return false;
   }
   
   Future<void> _releasePlayer() async {
@@ -186,6 +304,18 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
     }
   }
   
+  Future<double> _getActualFrameRate() async {
+    try {
+      final result = await _channel.invokeMethod('getFrameRate');
+      if (result != null && result > 0) {
+        return result.toDouble();
+      }
+    } catch (e) {
+      debugPrint('⚠️ Could not get frame rate: $e');
+    }
+    return 0.0; // Unknown frame rate
+  }
+
   String _formatDuration(int ms) {
     final seconds = ms ~/ 1000;
     final minutes = seconds ~/ 60;

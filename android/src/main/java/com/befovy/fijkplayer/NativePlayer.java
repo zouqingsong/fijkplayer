@@ -16,6 +16,11 @@ public class NativePlayer {
     // Native player handle (accessed by JNI)
     private long mNativeHandle = 0;
     
+    // Position caching to reduce JNI calls
+    private long mCachedPosition = 0;
+    private long mLastPositionUpdate = 0;
+    private static final long POSITION_CACHE_INTERVAL_MS = 100; // Cache for 100ms
+    
     // Event callback interface
     public interface EventCallback {
         void onNativeEvent(int eventType, int arg1, int arg2);
@@ -95,6 +100,7 @@ public class NativePlayer {
         if (mNativeHandle == 0) {
             throw new IllegalStateException("Native player not initialized");
         }
+        invalidatePositionCache(); // Invalidate cache on state change
         nativeStart(mNativeHandle);
     }
     
@@ -105,6 +111,7 @@ public class NativePlayer {
         if (mNativeHandle == 0) {
             throw new IllegalStateException("Native player not initialized");
         }
+        invalidatePositionCache(); // Invalidate cache on state change
         nativePause(mNativeHandle);
     }
     
@@ -115,6 +122,7 @@ public class NativePlayer {
         if (mNativeHandle == 0) {
             throw new IllegalStateException("Native player not initialized");
         }
+        invalidatePositionCache(); // Invalidate cache on state change
         nativeResume(mNativeHandle);
     }
     
@@ -135,17 +143,33 @@ public class NativePlayer {
         if (mNativeHandle == 0) {
             throw new IllegalStateException("Native player not initialized");
         }
+        invalidatePositionCache(); // Invalidate cache on seek
         nativeSeekTo(mNativeHandle, positionMs);
     }
     
     /**
      * Get current playback position (milliseconds)
+     * Uses caching to reduce expensive JNI calls
      */
     public long getCurrentPosition() {
         if (mNativeHandle == 0) {
             return 0;
         }
-        return nativeGetCurrentPosition(mNativeHandle);
+        
+        long currentTime = System.currentTimeMillis();
+        
+        // Return cached position if within cache interval
+        if (currentTime - mLastPositionUpdate < POSITION_CACHE_INTERVAL_MS) {
+            // Log.d("NativePlayer", "📱 Position from cache: " + mCachedPosition);
+            return mCachedPosition;
+        }
+        
+        // Update cached position
+        mCachedPosition = nativeGetCurrentPosition(mNativeHandle);
+        mLastPositionUpdate = currentTime;
+        // Log.d("NativePlayer", "🔄 Position from JNI: " + mCachedPosition);
+        
+        return mCachedPosition;
     }
     
     /**
@@ -156,6 +180,23 @@ public class NativePlayer {
             return 0;
         }
         return nativeGetDuration(mNativeHandle);
+    }
+    
+    /**
+     * Get video frame rate (fps)
+     */
+    public double getFrameRate() {
+        if (mNativeHandle == 0) {
+            return 0.0;
+        }
+        return nativeGetFrameRate(mNativeHandle);
+    }
+    
+    /**
+     * Invalidate position cache (call on seek, pause, resume)
+     */
+    private void invalidatePositionCache() {
+        mLastPositionUpdate = 0;
     }
     
     /**
@@ -241,6 +282,7 @@ public class NativePlayer {
     private native void nativeSeekTo(long handle, long positionMs);
     private native long nativeGetCurrentPosition(long handle);
     private native long nativeGetDuration(long handle);
+    private native double nativeGetFrameRate(long handle);
     private native int nativeGetVideoWidth(long handle);
     private native int nativeGetVideoHeight(long handle);
     private native boolean nativeIsPlaying(long handle);

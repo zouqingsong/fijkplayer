@@ -9,6 +9,7 @@
     // Native C components
     FFDemuxer *_demuxer;
     VTDecompressionSessionRef _decompressionSession;
+    CMFormatDescriptionRef _formatDescription;
     FJKPixelBufferRenderer *_renderer;
     
     // State
@@ -25,6 +26,12 @@
     int64_t _duration;
     int64_t _currentPosition;
     BOOL _isPlaying;
+    
+    // Frame timing
+    CFTimeInterval _lastFrameTime;
+    CFTimeInterval _targetFrameInterval; // 1/framerate
+    BOOL _isLiveStream; // Live streams have no frame timing
+    double _videoFrameRate; // Actual frame rate from stream
     
     // Synchronization
     NSLock *_stateLock;
@@ -43,6 +50,9 @@
         _stateLock = [[NSLock alloc] init];
         _demuxerQueue = dispatch_queue_create("com.befovy.fijk.demuxer", DISPATCH_QUEUE_SERIAL);
         _decoderQueue = dispatch_queue_create("com.befovy.fijk.decoder", DISPATCH_QUEUE_SERIAL);
+        _isLiveStream = NO;
+        _videoFrameRate = 24.0; // Default fallback
+        _targetFrameInterval = 1.0/24.0;
         
         NSLog(@"[FJKNativePlayer] Initialized");
     }
@@ -124,6 +134,11 @@
     
     _state = FJKPlayerStatePlaying;
     _isPlaying = YES;
+    
+    // Reset frame timing
+    _lastFrameTime = 0;
+    _targetFrameInterval = 1.0 / 24.0; // Assume 24fps for now
+    
     [_stateLock unlock];
     
     // Start decoder thread
@@ -168,6 +183,28 @@
     NSLog(@"[FJKNativePlayer] Seek to %lld ms (not implemented)", positionMs);
 }
 
+- (BOOL)isLiveStream:(NSString *)url {
+    if (!url) return NO;
+    
+    // Check for live streaming protocols
+    if ([url hasPrefix:@"rtsp://"] || 
+        [url hasPrefix:@"rtmp://"] ||
+        [url hasPrefix:@"rtp://"]) {
+        return YES;
+    }
+    
+    // Check for live streaming formats in HTTP URLs
+    if ([url hasPrefix:@"http://"] || [url hasPrefix:@"https://"]) {
+        if ([url containsString:@".m3u8"] || // HLS
+            [url containsString:@"/live/"] ||
+            [url containsString:@"live="]) {
+            return YES;
+        }
+    }
+    
+    return NO;
+}
+
 - (void)cleanup {
     NSLog(@"[FJKNativePlayer] Releasing resources");
     
@@ -177,6 +214,11 @@
         VTDecompressionSessionInvalidate(_decompressionSession);
         CFRelease(_decompressionSession);
         _decompressionSession = NULL;
+    }
+    
+    if (_formatDescription) {
+        CFRelease(_formatDescription);
+        _formatDescription = NULL;
     }
     
     if (_renderer) {
@@ -237,6 +279,22 @@
     _videoSize = CGSizeMake(videoStream->width, videoStream->height);
     _duration = ff_demuxer_get_duration(_demuxer) / 1000; // Convert µs to ms
     
+    // Detect live stream and frame rate
+    _isLiveStream = [self isLiveStream:_dataSource] || (_duration == 0);
+    
+    // Get actual frame rate from stream
+    if (videoStream->fps_den > 0 && videoStream->fps_num > 0) {
+        _videoFrameRate = (double)videoStream->fps_num / (double)videoStream->fps_den;
+        _targetFrameInterval = 1.0 / _videoFrameRate;
+    } else {
+        _videoFrameRate = 25.0; // Default for unknown frame rate
+        _targetFrameInterval = 1.0 / 25.0;
+    }
+    
+    NSLog(@"[FJKNativePlayer] Stream info: %dx%d, fps=%.2f, live=%@, duration=%lld ms", 
+          (int)_videoSize.width, (int)_videoSize.height, _videoFrameRate, 
+          _isLiveStream ? @"YES" : @"NO", _duration);
+    
     // Create VideoToolbox decoder
     ret = [self createVideoToolboxDecoder:videoStream];
     if (ret < 0) {
@@ -268,10 +326,111 @@
     
     if (stream->extradata && stream->extradata_size > 0) {
         // Parse H.264 extradata (avcC format)
+        // avcC format: [configurationVersion(1)][AVCProfileIndication(1)][profile_compatibility(1)][AVCLevelIndication(1)]
+        //              [lengthSizeMinusOne(1)][numOfSequenceParameterSets(1)][SPS...]
+        //              [numOfPictureParameterSets(1)][PPS...]
+        
+        const uint8_t *extradata = stream->extradata;
+        int extradata_size = stream->extradata_size;
+        
+        if (extradata_size < 7) {
+            NSLog(@"[FJKNativePlayer] Extradata too small: %d bytes", extradata_size);
+            return -1;
+        }
+        
+        // Get NAL unit length size from avcC header
+        int lengthSizeMinusOne = extradata[4] & 0x03;
+        int nalUnitLengthSize = lengthSizeMinusOne + 1;
+        
+        NSLog(@"[FJKNativePlayer] avcC NAL unit length size: %d bytes", nalUnitLengthSize);
+        
+        // Skip first 5 bytes (version, profile, compatibility, level, length_size)
+        int offset = 5;
+        
+        // Number of SPS
+        int num_sps = extradata[offset++] & 0x1F;
+        NSMutableArray *spsArray = [NSMutableArray array];
+        NSMutableArray *spsSizes = [NSMutableArray array];
+        
+        for (int i = 0; i < num_sps; i++) {
+            if (offset + 2 > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid SPS size offset");
+                return -1;
+            }
+            
+            uint16_t sps_size = (extradata[offset] << 8) | extradata[offset + 1];
+            offset += 2;
+            
+            if (offset + sps_size > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid SPS data");
+                return -1;
+            }
+            
+            [spsArray addObject:[NSData dataWithBytes:&extradata[offset] length:sps_size]];
+            [spsSizes addObject:@(sps_size)];
+            offset += sps_size;
+        }
+        
+        // Number of PPS
+        if (offset >= extradata_size) {
+            NSLog(@"[FJKNativePlayer] No PPS in extradata");
+            return -1;
+        }
+        
+        int num_pps = extradata[offset++];
+        NSMutableArray *ppsArray = [NSMutableArray array];
+        NSMutableArray *ppsSizes = [NSMutableArray array];
+        
+        for (int i = 0; i < num_pps; i++) {
+            if (offset + 2 > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid PPS size offset");
+                return -1;
+            }
+            
+            uint16_t pps_size = (extradata[offset] << 8) | extradata[offset + 1];
+            offset += 2;
+            
+            if (offset + pps_size > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid PPS data");
+                return -1;
+            }
+            
+            [ppsArray addObject:[NSData dataWithBytes:&extradata[offset] length:pps_size]];
+            [ppsSizes addObject:@(pps_size)];
+            offset += pps_size;
+        }
+        
+        if (spsArray.count == 0 || ppsArray.count == 0) {
+            NSLog(@"[FJKNativePlayer] No SPS or PPS found in extradata");
+            return -1;
+        }
+        
+        NSLog(@"[FJKNativePlayer] Parsed avcC: %d SPS, %d PPS", (int)spsArray.count, (int)ppsArray.count);
+        
+        // Create parameter set pointers arrays
+        const uint8_t *parameterSetPointers[spsArray.count + ppsArray.count];
+        size_t parameterSetSizes[spsArray.count + ppsArray.count];
+        
+        // Add SPS
+        for (int i = 0; i < spsArray.count; i++) {
+            NSData *sps = spsArray[i];
+            parameterSetPointers[i] = sps.bytes;
+            parameterSetSizes[i] = sps.length;
+        }
+        
+        // Add PPS
+        for (int i = 0; i < ppsArray.count; i++) {
+            NSData *pps = ppsArray[i];
+            parameterSetPointers[spsArray.count + i] = pps.bytes;
+            parameterSetSizes[spsArray.count + i] = pps.length;
+        }
+        
         OSStatus status = CMVideoFormatDescriptionCreateFromH264ParameterSets(
             kCFAllocatorDefault,
-            0, NULL, NULL, // Will parse from extradata
-            4, // NAL unit length size
+            (size_t)(spsArray.count + ppsArray.count),
+            parameterSetPointers,
+            parameterSetSizes,
+            nalUnitLengthSize, // Use actual NAL unit length from avcC
             &formatDesc
         );
         
@@ -307,12 +466,14 @@
         &_decompressionSession
     );
     
-    CFRelease(formatDesc);
-    
     if (status != noErr) {
+        CFRelease(formatDesc);
         NSLog(@"[FJKNativePlayer] Failed to create decompression session: %d", (int)status);
         return -1;
     }
+    
+    // Store format description for CMSampleBuffer creation
+    _formatDescription = formatDesc;
     
     NSLog(@"[FJKNativePlayer] VideoToolbox decoder created: %dx%d", stream->width, stream->height);
     return 0;
@@ -328,6 +489,11 @@ static void decompressionOutputCallback(
     CMTime presentationTimeStamp,
     CMTime presentationDuration)
 {
+    static int frameCount = 0;
+    if (frameCount++ < 3) {
+        NSLog(@"[FJKNativePlayer] 🎬 Decode callback #%d: status=%d, imageBuffer=%p", frameCount, (int)status, imageBuffer);
+    }
+    
     if (status != noErr) {
         NSLog(@"[FJKNativePlayer] Decode error: %d", (int)status);
         return;
@@ -342,10 +508,30 @@ static void decompressionOutputCallback(
         return;
     }
     
+    // Simple frame rate limiting
+    CFTimeInterval currentTime = CACurrentMediaTime();
+    if (_lastFrameTime > 0) {
+        CFTimeInterval elapsed = currentTime - _lastFrameTime;
+        if (elapsed < _targetFrameInterval) {
+            // Skip this frame - we're going too fast
+            return;
+        }
+    }
+    
+    _lastFrameTime = currentTime;
+    [self displayFrame:imageBuffer pts:pts];
+}
+
+- (void)displayFrame:(CVImageBufferRef)imageBuffer pts:(CMTime)pts {
     // Render frame to output buffer
     BOOL success = [_renderer renderFrame:imageBuffer];
     if (success) {
         _currentPosition = CMTimeGetSeconds(pts) * 1000;
+        
+        // Notify that a new frame is available
+        if (self.frameCallback) {
+            self.frameCallback();
+        }
     }
 }
 
@@ -373,8 +559,21 @@ static void decompressionOutputCallback(
             int ret = ff_demuxer_read_packet(_demuxer, &packet); // Returns 0 on success
             
             if (ret == 0 && packet) {
-                // Decode packet with VideoToolbox
-                [self decodePacket:packet];
+                // Only decode video packets with VideoToolbox
+                int video_stream_index = ff_demuxer_find_video_stream(_demuxer);
+                if (packet->stream_index == video_stream_index) {
+                    [self decodePacket:packet];
+                    
+                    // Adaptive timing based on stream type
+                    if (_isLiveStream) {
+                        // Live streams: minimal delay for lowest latency
+                        usleep(1000); // 1ms only
+                    } else {
+                        // File playback: respect actual frame rate
+                        usleep((useconds_t)(_targetFrameInterval * 1000000)); // Convert to microseconds
+                    }
+                }
+                // TODO: Handle audio packets separately
                 ff_packet_free(packet);
             } else if (ret == -EAGAIN) {
                 // No packet available, wait a bit
@@ -418,7 +617,7 @@ static void decompressionOutputCallback(
         blockBuffer,
         TRUE,
         NULL, NULL,
-        NULL, // format description - need to set
+        _formatDescription,
         1, 1, &timing,
         0, NULL,
         &sampleBuffer
@@ -429,6 +628,11 @@ static void decompressionOutputCallback(
         VTDecodeFrameFlags flags = kVTDecodeFrame_EnableAsynchronousDecompression;
         VTDecodeInfoFlags infoFlags;
         
+        static int decodeCount = 0;
+        if (decodeCount++ < 3) {
+            NSLog(@"[FJKNativePlayer] 📤 Submitting frame #%d to VideoToolbox", decodeCount);
+        }
+        
         status = VTDecompressionSessionDecodeFrame(
             _decompressionSession,
             sampleBuffer,
@@ -436,6 +640,10 @@ static void decompressionOutputCallback(
             NULL, // source frame ref con
             &infoFlags
         );
+        
+        if (decodeCount <= 3) {
+            NSLog(@"[FJKNativePlayer] 📥 Decode status: %d, infoFlags: 0x%x", (int)status, (unsigned int)infoFlags);
+        }
         
         CFRelease(sampleBuffer);
     }

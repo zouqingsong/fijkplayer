@@ -575,6 +575,9 @@ int ff_demuxer_read_packet(FFDemuxer* demuxer, FFPacket** out_packet) {
     }
     
     // Apply bitstream filter for H.264 video packets (AVCC → AnnexB conversion)
+    // NOTE: Disabled for iOS - VideoToolbox expects avcC format (length-prefixed NALUs)
+    // The format description is created from SPS/PPS and VideoToolbox handles the conversion internally
+    #if 0
     if (demuxer->h264_bsf != NULL) {
         AVStream* stream = demuxer->format_ctx->streams[av_pkt->stream_index];
         if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -607,8 +610,33 @@ int ff_demuxer_read_packet(FFDemuxer* demuxer, FFPacket** out_packet) {
                 return AVERROR_INVALIDDATA;
             }
             
-            // BSF conversion successful (logging disabled for performance)
+            // BSF conversion successful - log first few packets
+            static int bsf_log_count = 0;
+            if (bsf_log_count++ < 3) {
+                LOGI("✅ BSF converted packet: size=%d, first bytes: %02x %02x %02x %02x",
+                     av_pkt->size,
+                     av_pkt->size > 0 ? av_pkt->data[0] : 0,
+                     av_pkt->size > 1 ? av_pkt->data[1] : 0,
+                     av_pkt->size > 2 ? av_pkt->data[2] : 0,
+                     av_pkt->size > 3 ? av_pkt->data[3] : 0);
+            }
         }
+    }
+    #endif
+    
+    // Log original avcC format packets for iOS VideoToolbox
+    static int avcc_log_count = 0;
+    if (avcc_log_count++ < 5) {
+        AVStream* stream = demuxer->format_ctx->streams[av_pkt->stream_index];
+        LOGI("📦 Packet stream %d (%s): size=%d, first bytes: %02x %02x %02x %02x",
+             av_pkt->stream_index,
+             stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO ? "VIDEO" : 
+             stream->codecpar->codec_type == AVMEDIA_TYPE_AUDIO ? "AUDIO" : "OTHER",
+             av_pkt->size,
+             av_pkt->size > 0 ? av_pkt->data[0] : 0,
+             av_pkt->size > 1 ? av_pkt->data[1] : 0,
+             av_pkt->size > 2 ? av_pkt->data[2] : 0,
+             av_pkt->size > 3 ? av_pkt->data[3] : 0);
     }
     
     // Convert to our packet structure

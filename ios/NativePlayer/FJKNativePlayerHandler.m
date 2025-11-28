@@ -21,6 +21,14 @@
         // Register texture with Flutter
         _textureId = [textureRegistry registerTexture:self];
         
+        // Set frame callback to notify Flutter when new frames are available
+        FJKPlayerTexture *texture = self;  // Capture self without retain cycle in non-ARC
+        [player setFrameCallback:^{
+            if (texture && texture->_textureId >= 0) {
+                [texture->_textureRegistry textureFrameAvailable:texture->_textureId];
+            }
+        }];
+        
         NSLog(@"[FJKPlayerTexture] Texture registered: ID=%lld", _textureId);
     }
     return self;

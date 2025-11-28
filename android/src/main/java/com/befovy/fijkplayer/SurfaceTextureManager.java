@@ -37,7 +37,10 @@ public class SurfaceTextureManager {
 
                 long count = frameCount.incrementAndGet();
                 
-                // Just track frame arrivals - Flutter will call updateTexImage() from raster thread
+                // Note: Flutter should automatically handle texture updates
+                // Position updates currently trigger UI refreshes
+                
+                // Just track frame arrivals for debugging
                 if (count % 240 == 0) {
                     long now = System.nanoTime() / 1000000;
                     long interval = (lastFrameTime > 0) ? (now - lastFrameTime) : 0;
@@ -107,5 +110,14 @@ public class SurfaceTextureManager {
             surfaceTexture.setDefaultBufferSize(width, height);
             Log.d(TAG, "Buffer size set to " + width + "x" + height);
         }
+    }
+    
+    /**
+     * Notify Flutter about texture updates
+     * Simple implementation that doesn't require EGL context
+     */
+    private void notifyFlutterTextureUpdate() {
+        // For now, Flutter should handle texture updates automatically
+        // when MediaCodec writes new frames to the Surface
     }
 }
