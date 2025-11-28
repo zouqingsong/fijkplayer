@@ -338,12 +338,13 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             testUrl = "https://httpbin.org/get";
         }
         
-        Log.i(TAG, "Testing HTTPS connectivity to: " + testUrl);
+        final String finalTestUrl = testUrl; // Make effectively final for lambda
+        Log.i(TAG, "Testing HTTPS connectivity to: " + finalTestUrl);
         
         // Run network operation on background thread to avoid NetworkOnMainThreadException
         new Thread(() -> {
             try {
-                java.net.URL url = new java.net.URL(testUrl);
+                java.net.URL url = new java.net.URL(finalTestUrl);
                 java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
                 connection.setRequestMethod("HEAD");
                 connection.setConnectTimeout(5000); // 5 second timeout
@@ -357,7 +358,7 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
                 result.success(success);
                 
             } catch (Exception e) {
-                Log.e(TAG, "HTTPS connectivity test failed", e);
+                Log.e(TAG, "HTTPS connectivity test failed: " + e.getMessage());
                 result.success(false); // Return false instead of error for connectivity issues
             }
         }).start();

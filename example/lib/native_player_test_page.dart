@@ -28,25 +28,28 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
   double _videoFrameRate = 30.0; // Default frame rate
   int _refreshInterval = 33; // Default 30fps (1000ms/30 ≈ 33ms)
   
-  // Test with network source (HTTP MP4) - File stream (fallback from HTTPS)
-  final String _testUrl = 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+  // Test with network source (HTTPS MP4) - File stream with OpenSSL support
+  final String _testUrl = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
   
   // Alternative test URLs:
   
   // 📁 VIDEO FILES (will use actual fps, lower UI refresh):
   // 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
-  // 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4'
+  // 'http://techslides.com/demos/sample-videos/small.mp4'  // Small test file
   // 'file:///storage/emulated/0/Movies/your_video.mp4'
   
-  // 🔒 HTTPS VIDEO FILES (SSL/TLS encrypted, certificate verification enabled):
+  // 🔒 HTTPS VIDEO FILES (requires FFmpeg with TLS backend):
   // 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4'
-  // 'https://www.learningcontainer.com/wp-content/uploads/2020/05/sample-mp4-file.mp4'
-  // 'https://file-examples.com/storage/fe86c86ab1996b9a2ee7f83/2017/10/file_example_MP4_1920_18MG.mp4'
+  // 'https://sample-videos.com/zip/10/mp4/SampleVideo_1280x720_1mb.mp4'
   
   // 🔴 LIVE STREAMS (will use high refresh rate, low latency):
   // 'rtsp://wowzaec2demo.streamlock.net/vod/mp4:BigBuckBunny_115k.mov'
-  // 'https://devstreaming-cdn.apple.com/videos/streaming/examples/img_bipbop_adv_example_ts/master.m3u8' // HLS over HTTPS
-  // 'rtmp://your-streaming-server.com/live/stream_key'
+  // 'rtsp://184.72.239.149/vod/mp4:BigBuckBunny_115k.mov'  // Alternative RTSP
+  // 'http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4'
+  
+  // 🎵 AUDIO STREAMS:
+  // 'http://ice1.somafm.com/groovesalad-256-mp3'  // SomaFM Groove Salad
+  // 'http://stream.live.vc.bbcmedia.co.uk/bbc_world_service'  // BBC World Service
   @override
   void initState() {
     super.initState();
@@ -467,7 +470,7 @@ class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
           Padding(
             padding: EdgeInsets.all(8),
             child: Text(
-              'Test: Big Buck Bunny (596s, 1280x720, HTTP)',
+              'Test: Big Buck Bunny (596s, 1280x720, HTTPS/OpenSSL)',
               style: TextStyle(fontSize: 12, color: Colors.grey),
             ),
           ),

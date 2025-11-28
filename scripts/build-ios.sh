@@ -51,6 +51,10 @@ fi
 
 # Download FFmpeg source
 download_ffmpeg() {
+    # Ensure build directory exists
+    mkdir -p "$BUILD_DIR"
+    cd "$BUILD_DIR"
+    
     if [ -d "$FFMPEG_SOURCE" ]; then
         echo -e "${YELLOW}FFmpeg source already exists, skipping download${NC}"
         return
@@ -122,7 +126,7 @@ build_arch() {
     rm -rf "$BUILD_PATH"
     mkdir -p "$BUILD_PATH"
     
-    cd "$FFMPEG_SOURCE"
+    cd "${BUILD_DIR}/${FFMPEG_SOURCE}"
     
     # Set compiler flags - use different version flags for device vs simulator
     local TARGET_OS="darwin"
@@ -201,7 +205,7 @@ build_arm64_simulator() {
     rm -rf "$BUILD_PATH"
     mkdir -p "$BUILD_PATH"
     
-    cd "$FFMPEG_SOURCE"
+    cd "${BUILD_DIR}/${FFMPEG_SOURCE}"
     
     # Set compiler flags for simulator
     local CFLAGS="-arch arm64 -mios-simulator-version-min=${IOS_MIN_VERSION} -fembed-bitcode -isysroot ${SDK_PATH_SIMULATOR}"
