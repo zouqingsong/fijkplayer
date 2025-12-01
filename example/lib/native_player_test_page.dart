@@ -10,7 +10,7 @@ class NativePlayerTestPage extends StatefulWidget {
 }
 
 class _NativePlayerTestPageState extends State<NativePlayerTestPage> {
-  static const MethodChannel _channel = MethodChannel('befovy.com/fijk/native_player_test');
+  static const MethodChannel _channel = MethodChannel('befovy.com/fijk/native_player');
   
   int? _textureId;
   String _status = 'Not initialized';

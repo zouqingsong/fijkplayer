@@ -13,6 +13,10 @@ dependencies:
   # shared_preferences: ^2.3.2  # Temporarily disabled due to iOS linking bug
   permission_handler: ^11.3.0
 
+  # The fijkplayer plugin (your 7 weeks of FFmpeg work!)
+  fijkplayer:
+    path: ../
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   # cupertino_icons: ^0.1.3
@@ -25,9 +29,6 @@ dev_dependencies:
     sdk: flutter
 
   test: ^1.16.5
-
-  fijkplayer:
-    path: ../
 
 # For information on the generic Dart part of this file, see the
 # following page: https://www.dartlang.org/tools/pub/pubspec

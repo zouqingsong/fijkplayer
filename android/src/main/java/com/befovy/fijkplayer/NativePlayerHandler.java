@@ -14,12 +14,12 @@ import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
 
 /**
- * Test handler for NativePlayer - Direct method channel access
- * Bypasses FijkPlayer.java for quick validation testing
+ * Handler for NativePlayer - Direct method channel access
+ * Channel: befovy.com/fijk/native_player
  */
-public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler {
+public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
     
-    private static final String TAG = "NativePlayerTest";
+    private static final String TAG = "NativePlayer";
     
     private final TextureRegistry textureRegistry;
     private final Context context;
@@ -28,7 +28,7 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
     private SurfaceTextureManager surfaceTextureManager;
     private MethodChannel.Result prepareResult;
     
-    public NativePlayerTestHandler(Context context, TextureRegistry textureRegistry) {
+    public NativePlayerHandler(Context context, TextureRegistry textureRegistry) {
         this.context = context;
         this.textureRegistry = textureRegistry;
     }
@@ -65,9 +65,6 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             case "getDuration":
                 handleGetDuration(result);
                 break;
-            case "getFrameRate":
-                handleGetFrameRate(result);
-                break;
             case "getVideoSize":
                 handleGetVideoSize(result);
                 break;
@@ -76,9 +73,6 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
                 break;
             case "release":
                 handleRelease(result);
-                break;
-            case "testHttpsConnectivity":
-                handleTestHttpsConnectivity(call, result);
                 break;
             default:
                 result.notImplemented();
@@ -259,21 +253,6 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
         }
     }
     
-    private void handleGetFrameRate(MethodChannel.Result result) {
-        if (player == null) {
-            result.error("NO_PLAYER", "Player not created", null);
-            return;
-        }
-        
-        try {
-            double frameRate = player.getFrameRate();
-            result.success(frameRate);
-        } catch (Exception e) {
-            Log.e(TAG, "Failed to get frame rate", e);
-            result.error("GET_FRAMERATE_FAILED", e.getMessage(), null);
-        }
-    }
-    
     private void handleGetVideoSize(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
@@ -330,38 +309,6 @@ public class NativePlayerTestHandler implements MethodChannel.MethodCallHandler 
             Log.e(TAG, "Failed to release", e);
             result.error("RELEASE_FAILED", e.getMessage(), null);
         }
-    }
-    
-    private void handleTestHttpsConnectivity(MethodCall call, MethodChannel.Result result) {
-        String testUrl = call.argument("url");
-        if (testUrl == null) {
-            testUrl = "https://httpbin.org/get";
-        }
-        
-        final String finalTestUrl = testUrl; // Make effectively final for lambda
-        Log.i(TAG, "Testing HTTPS connectivity to: " + finalTestUrl);
-        
-        // Run network operation on background thread to avoid NetworkOnMainThreadException
-        new Thread(() -> {
-            try {
-                java.net.URL url = new java.net.URL(finalTestUrl);
-                java.net.HttpURLConnection connection = (java.net.HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("HEAD");
-                connection.setConnectTimeout(5000); // 5 second timeout
-                connection.setReadTimeout(5000);
-                
-                int responseCode = connection.getResponseCode();
-                connection.disconnect();
-                
-                boolean success = responseCode == 200;
-                Log.i(TAG, "HTTPS test result: " + responseCode + " (success: " + success + ")");
-                result.success(success);
-                
-            } catch (Exception e) {
-                Log.e(TAG, "HTTPS connectivity test failed: " + e.getMessage());
-                result.success(false); // Return false instead of error for connectivity issues
-            }
-        }).start();
     }
     
     private void onPlayerEvent(int eventType, int arg1, int arg2) {
