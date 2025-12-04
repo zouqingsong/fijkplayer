@@ -222,6 +222,30 @@ int native_player_get_video_width(NativePlayer* player);
 int native_player_get_video_height(NativePlayer* player);
 
 /**
+ * Get audio sample rate
+ * 
+ * @param player Player handle
+ * @return Audio sample rate in Hz, or 0 if no audio
+ */
+int native_player_get_audio_sample_rate(NativePlayer* player);
+
+/**
+ * Get audio channel count
+ * 
+ * @param player Player handle
+ * @return Number of audio channels, or 0 if no audio
+ */
+int native_player_get_audio_channels(NativePlayer* player);
+
+/**
+ * Check if audio stream exists
+ * 
+ * @param player Player handle
+ * @return true if audio stream is present
+ */
+bool native_player_has_audio(NativePlayer* player);
+
+/**
  * Check if playing
  * 
  * @param player Player handle

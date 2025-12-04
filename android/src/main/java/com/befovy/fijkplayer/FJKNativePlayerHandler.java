@@ -17,18 +17,18 @@ import io.flutter.view.TextureRegistry;
  * Handler for NativePlayer - Direct method channel access
  * Channel: befovy.com/fijk/native_player
  */
-public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
+public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
     
-    private static final String TAG = "NativePlayer";
+    private static final String TAG = "FJKNativePlayerHandler";
     
     private final TextureRegistry textureRegistry;
     private final Context context;
-    private NativePlayer player;
+    private FJKNativePlayer player;
     private TextureRegistry.SurfaceTextureEntry textureEntry;
     private SurfaceTextureManager surfaceTextureManager;
     private MethodChannel.Result prepareResult;
     
-    public NativePlayerHandler(Context context, TextureRegistry textureRegistry) {
+    public FJKNativePlayerHandler(Context context, TextureRegistry textureRegistry) {
         this.context = context;
         this.textureRegistry = textureRegistry;
     }
@@ -85,7 +85,7 @@ public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
             textureEntry = textureRegistry.createSurfaceTexture();
             
             // Create native player first
-            player = new NativePlayer();
+            player = new FJKNativePlayer();
             
             // Create SurfaceTextureManager with the TextureEntry
             // This allows the manager to notify Flutter when frames are available
@@ -316,9 +316,18 @@ public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
         Log.i(TAG, "Player event: " + eventName + " (" + eventType + "), arg1=" + arg1 + ", arg2=" + arg2);
         
         // Handle async prepare completion
-        if (eventType == NativePlayer.EVENT_PREPARED && prepareResult != null) {
+        if (eventType == FJKNativePlayer.EVENT_PREPARED && prepareResult != null) {
             int width = player.getVideoWidth();
             int height = player.getVideoHeight();
+            
+            // Log audio stream information
+            if (player.hasAudio()) {
+                int sampleRate = player.getAudioSampleRate();
+                int channels = player.getAudioChannels();
+                Log.i(TAG, "🔊 Audio detected: " + sampleRate + " Hz, " + channels + " channels");
+            } else {
+                Log.i(TAG, "No audio stream - video only playback");
+            }
             
             // Update SurfaceTexture buffer size with actual video dimensions
             if (surfaceTextureManager != null && width > 0 && height > 0) {
@@ -330,12 +339,17 @@ public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
             info.put("width", width);
             info.put("height", height);
             info.put("duration", player.getDuration());
+            info.put("hasAudio", player.hasAudio());
+            if (player.hasAudio()) {
+                info.put("audioSampleRate", player.getAudioSampleRate());
+                info.put("audioChannels", player.getAudioChannels());
+            }
             prepareResult.success(info);
             prepareResult = null;
             Log.i(TAG, "Prepare completed: " + info);
         }
         
-        if (eventType == NativePlayer.EVENT_ERROR && prepareResult != null) {
+        if (eventType == FJKNativePlayer.EVENT_ERROR && prepareResult != null) {
             prepareResult.error("PREPARE_ERROR", "Failed to prepare: code=" + arg1, null);
             prepareResult = null;
         }
@@ -343,15 +357,15 @@ public class NativePlayerHandler implements MethodChannel.MethodCallHandler {
     
     private String getEventName(int eventType) {
         switch (eventType) {
-            case NativePlayer.EVENT_PREPARED: return "PREPARED";
-            case NativePlayer.EVENT_STARTED: return "STARTED";
-            case NativePlayer.EVENT_PAUSED: return "PAUSED";
-            case NativePlayer.EVENT_STOPPED: return "STOPPED";
-            case NativePlayer.EVENT_COMPLETED: return "COMPLETED";
-            case NativePlayer.EVENT_ERROR: return "ERROR";
-            case NativePlayer.EVENT_VIDEO_SIZE_CHANGED: return "VIDEO_SIZE_CHANGED";
-            case NativePlayer.EVENT_BUFFERING: return "BUFFERING";
-            case NativePlayer.EVENT_SEEK_COMPLETE: return "SEEK_COMPLETE";
+            case FJKNativePlayer.EVENT_PREPARED: return "PREPARED";
+            case FJKNativePlayer.EVENT_STARTED: return "STARTED";
+            case FJKNativePlayer.EVENT_PAUSED: return "PAUSED";
+            case FJKNativePlayer.EVENT_STOPPED: return "STOPPED";
+            case FJKNativePlayer.EVENT_COMPLETED: return "COMPLETED";
+            case FJKNativePlayer.EVENT_ERROR: return "ERROR";
+            case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED: return "VIDEO_SIZE_CHANGED";
+            case FJKNativePlayer.EVENT_BUFFERING: return "BUFFERING";
+            case FJKNativePlayer.EVENT_SEEK_COMPLETE: return "SEEK_COMPLETE";
             default: return "UNKNOWN";
         }
     }

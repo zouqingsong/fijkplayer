@@ -493,6 +493,16 @@ FFStream* ff_demuxer_get_stream(FFDemuxer* demuxer, int index) {
         stream->channels = codecpar->ch_layout.nb_channels;
         stream->bits_per_sample = codecpar->bits_per_coded_sample;
         
+        // Copy extradata (AudioSpecificConfig for AAC, etc.)
+        if (codecpar->extradata_size > 0) {
+            stream->extradata = (uint8_t*)malloc(codecpar->extradata_size);
+            if (stream->extradata) {
+                memcpy(stream->extradata, codecpar->extradata, codecpar->extradata_size);
+                stream->extradata_size = codecpar->extradata_size;
+                LOGI("Audio stream %d extradata: %d bytes", index, codecpar->extradata_size);
+            }
+        }
+        
         LOGI("Audio stream %d: %d Hz, %d channels, codec=%d",
              index, stream->sample_rate, stream->channels, stream->audio_codec);
         

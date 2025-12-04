@@ -6,7 +6,7 @@ import android.view.Surface;
  * Native Player - Java wrapper for the unified C player
  * Integrates FFmpeg demuxer, MediaCodec decoder, frame queue, and OpenGL renderer
  */
-public class NativePlayer {
+public class FJKNativePlayer {
     
     // Load native library
     static {
@@ -44,7 +44,7 @@ public class NativePlayer {
     /**
      * Constructor
      */
-    public NativePlayer() {
+    public FJKNativePlayer() {
         mNativeHandle = nativeInit();
     }
     
@@ -220,6 +220,36 @@ public class NativePlayer {
     }
     
     /**
+     * Get audio sample rate
+     */
+    public int getAudioSampleRate() {
+        if (mNativeHandle == 0) {
+            return 0;
+        }
+        return nativeGetAudioSampleRate(mNativeHandle);
+    }
+    
+    /**
+     * Get audio channel count
+     */
+    public int getAudioChannels() {
+        if (mNativeHandle == 0) {
+            return 0;
+        }
+        return nativeGetAudioChannels(mNativeHandle);
+    }
+    
+    /**
+     * Check if audio stream exists
+     */
+    public boolean hasAudio() {
+        if (mNativeHandle == 0) {
+            return false;
+        }
+        return nativeHasAudio(mNativeHandle);
+    }
+    
+    /**
      * Check if playing
      */
     public boolean isPlaying() {
@@ -285,6 +315,9 @@ public class NativePlayer {
     private native double nativeGetFrameRate(long handle);
     private native int nativeGetVideoWidth(long handle);
     private native int nativeGetVideoHeight(long handle);
+    private native int nativeGetAudioSampleRate(long handle);
+    private native int nativeGetAudioChannels(long handle);
+    private native boolean nativeHasAudio(long handle);
     private native boolean nativeIsPlaying(long handle);
     private native void nativeRenderFrame(long handle);
     private native void nativeSetVolume(long handle, float volume);

@@ -8,7 +8,7 @@ import android.view.Surface;
  */
 public class FijkFFmpegPlayer {
     
-    private NativePlayer nativePlayer;
+    private FJKNativePlayer nativePlayer;
     private String currentUrl;
     private boolean isInitialized = false;
     
@@ -38,7 +38,7 @@ public class FijkFFmpegPlayer {
      * Constructor
      */
     public FijkFFmpegPlayer() {
-        nativePlayer = new NativePlayer();
+        nativePlayer = new FJKNativePlayer();
         nativePlayer.setEventCallback(this::handleNativeEvent);
         isInitialized = true;
     }
@@ -290,31 +290,31 @@ public class FijkFFmpegPlayer {
         }
         
         switch (eventType) {
-            case NativePlayer.EVENT_PREPARED:
+            case FJKNativePlayer.EVENT_PREPARED:
                 eventCallback.onPrepared();
                 break;
-            case NativePlayer.EVENT_STARTED:
+            case FJKNativePlayer.EVENT_STARTED:
                 eventCallback.onStarted();
                 break;
-            case NativePlayer.EVENT_PAUSED:
+            case FJKNativePlayer.EVENT_PAUSED:
                 eventCallback.onPaused();
                 break;
-            case NativePlayer.EVENT_STOPPED:
+            case FJKNativePlayer.EVENT_STOPPED:
                 eventCallback.onStopped();
                 break;
-            case NativePlayer.EVENT_COMPLETED:
+            case FJKNativePlayer.EVENT_COMPLETED:
                 eventCallback.onCompleted();
                 break;
-            case NativePlayer.EVENT_ERROR:
+            case FJKNativePlayer.EVENT_ERROR:
                 eventCallback.onError("Native player error: " + arg1);
                 break;
-            case NativePlayer.EVENT_VIDEO_SIZE_CHANGED:
+            case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED:
                 eventCallback.onVideoSizeChanged(arg1, arg2);
                 break;
-            case NativePlayer.EVENT_BUFFERING:
+            case FJKNativePlayer.EVENT_BUFFERING:
                 eventCallback.onBuffering(arg1 == 1);
                 break;
-            case NativePlayer.EVENT_SEEK_COMPLETE:
+            case FJKNativePlayer.EVENT_SEEK_COMPLETE:
                 eventCallback.onSeekComplete();
                 break;
         }

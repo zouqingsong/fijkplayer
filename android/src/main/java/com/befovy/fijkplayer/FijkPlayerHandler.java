@@ -19,7 +19,7 @@ import io.flutter.view.TextureRegistry;
  * Production handler for FijkPlayer - Backward compatible with mobile_fijk_player
  * 
  * This handler provides the same API as the old ijkplayer-based implementation,
- * but uses the new NativePlayer (FFmpeg-based) implementation under the hood.
+ * but uses the new FJKNativePlayer (FFmpeg-based) implementation under the hood.
  * 
  * Channel: befovy.com/fijk
  */
@@ -113,7 +113,7 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             long textureId = textureEntry.id();
             
             // Create native player
-            NativePlayer player = new NativePlayer();
+            FJKNativePlayer player = new FJKNativePlayer();
             
             // Create surface texture manager
             SurfaceTextureManager surfaceManager = new SurfaceTextureManager(textureEntry);
@@ -513,11 +513,11 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
      */
     private static class PlayerInstance {
         final int playerId;
-        final NativePlayer player;
+        final FJKNativePlayer player;
         final TextureRegistry.SurfaceTextureEntry textureEntry;
         final SurfaceTextureManager surfaceManager;
         
-        PlayerInstance(int playerId, NativePlayer player, 
+        PlayerInstance(int playerId, FJKNativePlayer player, 
                       TextureRegistry.SurfaceTextureEntry textureEntry,
                       SurfaceTextureManager surfaceManager) {
             this.playerId = playerId;

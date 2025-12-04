@@ -2,8 +2,11 @@
 
 #import "FJKNativePlayer.h"
 #import "FJKPixelBufferRenderer.h"
+#import "FJKAudioRenderer.h"
 #import <VideoToolbox/VideoToolbox.h>
 #include "ffmpeg_demuxer.h"
+#include "FJKAudioDecoder.h"
+#include "FJKAudioQueue.h"
 
 @interface FJKNativePlayer () {
     // Native C components
@@ -11,6 +14,16 @@
     VTDecompressionSessionRef _decompressionSession;
     CMFormatDescriptionRef _formatDescription;
     FJKPixelBufferRenderer *_renderer;
+    
+    // Audio components (Phase 3)
+    FJKAudioDecoder *_audioDecoder;
+    FJKAudioQueue *_audioQueue;
+    FJKAudioRenderer *_audioRenderer;
+    dispatch_queue_t _audioDecoderQueue;
+    dispatch_queue_t _audioPlaybackQueue;
+    int _audioStreamIndex;
+    double _audioClock;
+    NSLock *_audioClockLock;
     
     // State
     FJKPlayerState _state;
@@ -32,6 +45,7 @@
     CFTimeInterval _targetFrameInterval; // 1/framerate
     BOOL _isLiveStream; // Live streams have no frame timing
     double _videoFrameRate; // Actual frame rate from stream
+    int64_t _lastVideoPts;
     
     // Synchronization
     NSLock *_stateLock;
@@ -48,11 +62,17 @@
     if (self) {
         _state = FJKPlayerStateIdle;
         _stateLock = [[NSLock alloc] init];
+        _audioClockLock = [[NSLock alloc] init];
         _demuxerQueue = dispatch_queue_create("com.befovy.fijk.demuxer", DISPATCH_QUEUE_SERIAL);
         _decoderQueue = dispatch_queue_create("com.befovy.fijk.decoder", DISPATCH_QUEUE_SERIAL);
+        _audioDecoderQueue = dispatch_queue_create("com.befovy.fijk.audio.decoder", DISPATCH_QUEUE_SERIAL);
+        _audioPlaybackQueue = dispatch_queue_create("com.befovy.fijk.audio.playback", DISPATCH_QUEUE_SERIAL);
         _isLiveStream = NO;
         _videoFrameRate = 24.0; // Default fallback
         _targetFrameInterval = 1.0/24.0;
+        _audioStreamIndex = -1;
+        _audioClock = 0.0;
+        _lastVideoPts = -1;
         
         NSLog(@"[FJKNativePlayer] Initialized");
     }
@@ -146,6 +166,19 @@
         [self runDecoderLoop];
     });
     
+    // Phase 3: Start audio playback if audio is available
+    if (_audioStreamIndex >= 0 && _audioDecoder && _audioQueue && _audioRenderer) {
+        // Start audio renderer
+        [_audioRenderer start];
+        
+        // Start audio playback thread (decoder is inline in main demuxer loop)
+        dispatch_async(_audioPlaybackQueue, ^{
+            [self runAudioPlaybackLoop];
+        });
+        
+        NSLog(@"[FJKNativePlayer] 🔊 Audio playback started");
+    }
+    
     [self notifyEvent:FJKPlayerEventStarted arg1:_videoSize.width arg2:_videoSize.height];
     NSLog(@"[FJKNativePlayer] Playback started");
     return 0;
@@ -156,6 +189,12 @@
     if (_state == FJKPlayerStatePlaying) {
         _state = FJKPlayerStatePaused;
         _isPlaying = NO;
+        
+        // Pause audio
+        if (_audioRenderer) {
+            [_audioRenderer pause];
+        }
+        
         [self notifyEvent:FJKPlayerEventPaused arg1:0 arg2:0];
     }
     [_stateLock unlock];
@@ -166,6 +205,12 @@
     if (_state == FJKPlayerStatePaused) {
         _state = FJKPlayerStatePlaying;
         _isPlaying = YES;
+        
+        // Resume audio
+        if (_audioRenderer) {
+            [_audioRenderer resume];
+        }
+        
         [self notifyEvent:FJKPlayerEventStarted arg1:0 arg2:0];
     }
     [_stateLock unlock];
@@ -236,6 +281,24 @@
         CVPixelBufferRelease(_pixelBuffer);
         _pixelBuffer = NULL;
     }
+    
+    // Phase 3: Cleanup audio resources
+    if (_audioRenderer) {
+        [_audioRenderer stop];
+        _audioRenderer = nil;
+    }
+    
+    if (_audioQueue) {
+        fjk_audio_queue_destroy(_audioQueue);
+        _audioQueue = NULL;
+    }
+    
+    if (_audioDecoder) {
+        fjk_audio_decoder_destroy(_audioDecoder);
+        _audioDecoder = NULL;
+    }
+    
+    _audioStreamIndex = -1;
     
     [_stateLock lock];
     _state = FJKPlayerStateIdle;
@@ -309,6 +372,56 @@
         return;
     }
     
+    // Phase 3: Initialize audio (find audio stream)
+    _audioStreamIndex = ff_demuxer_find_audio_stream(_demuxer);
+    if (_audioStreamIndex >= 0) {
+        FFStream *audioStream = ff_demuxer_get_stream(_demuxer, _audioStreamIndex);
+        if (audioStream && audioStream->type == FF_STREAM_TYPE_AUDIO) {
+            NSLog(@"[FJKNativePlayer] 🔊 Found audio stream: %d Hz, %d channels, codec=%d",
+                  audioStream->sample_rate, audioStream->channels, audioStream->audio_codec);
+            
+            // Create audio decoder
+            _audioDecoder = fjk_audio_decoder_create(audioStream);
+            if (!_audioDecoder) {
+                NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio decoder");
+                _audioStreamIndex = -1;
+            } else {
+                // Create audio queue (200ms buffer for fast audio start)
+                FJKAudioQueueConfig queueConfig = {
+                    .sample_rate = audioStream->sample_rate,
+                    .channels = audioStream->channels,
+                    .format = FJK_AUDIO_QUEUE_FORMAT_S16,
+                    .capacity_ms = 200
+                };
+                _audioQueue = fjk_audio_queue_create(&queueConfig);
+                
+                if (!_audioQueue) {
+                    NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio queue");
+                    fjk_audio_decoder_destroy(_audioDecoder);
+                    _audioDecoder = NULL;
+                    _audioStreamIndex = -1;
+                } else {
+                    // Create audio renderer
+                    _audioRenderer = [[FJKAudioRenderer alloc] initWithSampleRate:audioStream->sample_rate
+                                                                          channels:audioStream->channels];
+                    if (!_audioRenderer) {
+                        NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio renderer");
+                        fjk_audio_queue_destroy(_audioQueue);
+                        fjk_audio_decoder_destroy(_audioDecoder);
+                        _audioQueue = NULL;
+                        _audioDecoder = NULL;
+                        _audioStreamIndex = -1;
+                    } else {
+                        [_audioRenderer setVolume:1.0];  // Maximum volume
+                        NSLog(@"[FJKNativePlayer] ✅ Audio pipeline ready");
+                    }
+                }
+            }
+        }
+    } else {
+        NSLog(@"[FJKNativePlayer] ℹ️ No audio stream found");
+    }
+    
     [_stateLock lock];
     _state = FJKPlayerStatePrepared;
     [_stateLock unlock];
@@ -316,8 +429,9 @@
     [self notifyEvent:FJKPlayerEventPrepared arg1:0 arg2:0];
     [self notifyEvent:FJKPlayerEventVideoSizeChanged arg1:_videoSize.width arg2:_videoSize.height];
     
-    NSLog(@"[FJKNativePlayer] Prepared: %dx%d, duration=%lld ms", 
-          (int)_videoSize.width, (int)_videoSize.height, _duration);
+    NSLog(@"[FJKNativePlayer] Prepared: %dx%d, duration=%lld ms, audio=%@",
+          (int)_videoSize.width, (int)_videoSize.height, _duration,
+          _audioStreamIndex >= 0 ? @"YES" : @"NO");
 }
 
 - (int)createVideoToolboxDecoder:(FFStream *)stream {
@@ -559,9 +673,11 @@ static void decompressionOutputCallback(
             int ret = ff_demuxer_read_packet(_demuxer, &packet); // Returns 0 on success
             
             if (ret == 0 && packet) {
-                // Only decode video packets with VideoToolbox
                 int video_stream_index = ff_demuxer_find_video_stream(_demuxer);
+                
+                // Route packet to appropriate decoder
                 if (packet->stream_index == video_stream_index) {
+                    // Video packet - decode with VideoToolbox
                     [self decodePacket:packet];
                     
                     // Adaptive timing based on stream type
@@ -572,9 +688,18 @@ static void decompressionOutputCallback(
                         // File playback: respect actual frame rate
                         usleep((useconds_t)(_targetFrameInterval * 1000000)); // Convert to microseconds
                     }
+                } else if (_audioStreamIndex >= 0 && packet->stream_index == _audioStreamIndex) {
+                    // Audio packet - send to audio decoder asynchronously
+                    dispatch_async(_audioDecoderQueue, ^{
+                        [self processAudioPacket:packet];
+                    });
+                    // Don't free packet here - audio decoder will free it
+                    packet = NULL;
                 }
-                // TODO: Handle audio packets separately
-                ff_packet_free(packet);
+                
+                if (packet) {
+                    ff_packet_free(packet);
+                }
             } else if (ret == -EAGAIN) {
                 // No packet available, wait a bit
                 usleep(1000);
@@ -586,6 +711,97 @@ static void decompressionOutputCallback(
     }
     
     NSLog(@"[FJKNativePlayer] Decoder loop exited");
+}
+
+#pragma mark - Audio Decoder & Playback (Phase 3)
+
+- (void)processAudioPacket:(FFPacket *)packet {
+    if (!packet || !_audioDecoder || !_audioQueue) {
+        if (packet) ff_packet_free(packet);
+        return;
+    }
+    
+    static int packet_count = 0;
+    packet_count++;
+    
+    // Send packet to audio decoder
+    int ret = fjk_audio_decoder_send_packet(_audioDecoder, packet);
+    if (ret < 0) {
+        NSLog(@"[AudioDecoder] Failed to send packet: %d", ret);
+        ff_packet_free(packet);
+        return;
+    }
+    
+    // Decode to PCM samples
+    int16_t pcm_buffer[4096 * 2];  // 4096 samples stereo
+    int64_t pts;
+    int samples = fjk_audio_decoder_receive_samples(_audioDecoder, pcm_buffer, 4096, &pts);
+    
+    if (samples > 0) {
+        // Log first few successful decodes with amplitude check
+        if (packet_count <= 5) {
+            int16_t max_amp = 0;
+            for (int i = 0; i < samples * 2; i++) {
+                int16_t abs_val = abs(pcm_buffer[i]);
+                if (abs_val > max_amp) max_amp = abs_val;
+            }
+            NSLog(@"[AudioDecoder] ✅ Packet #%d decoded: %d samples, max_amp=%d", 
+                  packet_count, samples, max_amp);
+        }
+        
+        // Push to audio queue (blocks if full)
+        fjk_audio_queue_push(_audioQueue, pcm_buffer, samples, pts);
+    } else if (samples < 0) {
+        if (packet_count <= 10) {
+            NSLog(@"[AudioDecoder] ❌ Packet #%d failed to decode: %d", packet_count, samples);
+        }
+    }
+    
+    ff_packet_free(packet);
+}
+
+- (void)runAudioPlaybackLoop {
+    NSLog(@"[FJKNativePlayer] 🔊 Audio playback loop starting");
+    
+    int playback_count = 0;
+    int16_t pcm_buffer[2048 * 2];  // 2048 samples stereo (~46ms at 44.1kHz)
+    
+    while (_isPlaying && _audioStreamIndex >= 0) {
+        // Pop samples from queue (non-blocking)
+        int64_t pts;
+        int samples = fjk_audio_queue_pop(_audioQueue, pcm_buffer, 2048, &pts);
+        
+        if (samples > 0) {
+            playback_count++;
+            
+            // Update audio clock for A/V sync
+            if (pts > 0) {
+                double audio_pts = (double)pts / 1000000.0;  // Convert to seconds
+                [_audioClockLock lock];
+                _audioClock = audio_pts;
+                [_audioClockLock unlock];
+            }
+            
+            // Write to audio renderer
+            [_audioRenderer writeSamples:pcm_buffer count:samples];
+            
+            // Log first few chunks
+            if (playback_count <= 3) {
+                int16_t max_amplitude = 0;
+                for (int i = 0; i < samples * 2; i++) {
+                    int16_t abs_sample = abs(pcm_buffer[i]);
+                    if (abs_sample > max_amplitude) max_amplitude = abs_sample;
+                }
+                NSLog(@"[FJKNativePlayer] 🔊 Played chunk #%d: samples=%d, max_amplitude=%d",
+                      playback_count, samples, max_amplitude);
+            }
+        } else {
+            // Queue empty, wait a bit
+            usleep(5000);  // 5ms
+        }
+    }
+    
+    NSLog(@"[FJKNativePlayer] 🔊 Audio playback loop exited");
 }
 
 - (void)decodePacket:(FFPacket *)packet {

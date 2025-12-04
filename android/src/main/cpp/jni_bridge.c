@@ -15,8 +15,8 @@
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-// JNI method name prefix
-#define JNI_METHOD(name) Java_com_befovy_fijkplayer_NativePlayer_##name
+// JNI method name prefix (updated for FJKNativePlayer)
+#define JNI_METHOD(name) Java_com_befovy_fijkplayer_FJKNativePlayer_##name
 
 // Helper: Get player handle from Java long field
 static NativePlayer* get_player(JNIEnv* env, jobject thiz) {
@@ -211,6 +211,30 @@ JNI_METHOD(nativeSetVolume)(JNIEnv* env, jobject thiz, jlong handle, jfloat volu
     if (!player) return;
     
     native_player_set_volume(player, volume);
+}
+
+JNIEXPORT jint JNICALL
+JNI_METHOD(nativeGetAudioSampleRate)(JNIEnv* env, jobject thiz, jlong handle) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return 0;
+    
+    return native_player_get_audio_sample_rate(player);
+}
+
+JNIEXPORT jint JNICALL
+JNI_METHOD(nativeGetAudioChannels)(JNIEnv* env, jobject thiz, jlong handle) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return 0;
+    
+    return native_player_get_audio_channels(player);
+}
+
+JNIEXPORT jboolean JNICALL
+JNI_METHOD(nativeHasAudio)(JNIEnv* env, jobject thiz, jlong handle) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return JNI_FALSE;
+    
+    return native_player_has_audio(player) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

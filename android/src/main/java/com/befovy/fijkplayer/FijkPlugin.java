@@ -24,7 +24,7 @@ public class FijkPlugin implements FlutterPlugin {
     
     // Native player channel for direct NativePlayer access
     private MethodChannel nativePlayerChannel;
-    private NativePlayerHandler nativePlayerHandler;
+    private FJKNativePlayerHandler nativePlayerHandler;
     
     // Recorder channel for recording functionality
     private MethodChannel recorderChannel;
@@ -54,7 +54,7 @@ public class FijkPlugin implements FlutterPlugin {
             binding.getBinaryMessenger(),
             "befovy.com/fijk/native_player"
         );
-        nativePlayerHandler = new NativePlayerHandler(
+        nativePlayerHandler = new FJKNativePlayerHandler(
             appContext,
             binding.getTextureRegistry()
         );

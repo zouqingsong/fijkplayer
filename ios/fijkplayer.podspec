@@ -4,24 +4,25 @@
 Pod::Spec.new do |s|
   s.name             = 'fijkplayer'
   s.version          = '0.11.0'
-  s.summary          = 'Flutter plugin for ijkplayer'
+  s.summary          = 'Flutter media player plugin with native FFmpeg support'
   s.description      = <<-DESC
-Flutter plugin for ijkplayer
+Flutter media player plugin with native FFmpeg-based player implementation.
+Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
                        DESC
-  s.homepage         = 'http://github.com/befovy/fijkplayer'
+  s.homepage         = 'https://github.com/zouqingsong/fijkplayer'
   s.license          = { :file => '../LICENSE' }
-  s.author           = { 'befovy' => 'befovy@gmail.com' }
+  s.author           = { 'zouqingsong' => 'zouqingsong@gmail.com' }
   s.source           = { :path => '.' }
-  s.source_files = 'Classes/**/*', 'NativePlayer/**/*'
+  s.source_files = 'Classes/**/*', 'NativePlayer/**/*.{h,m,c}'
   s.public_header_files = 'Classes/**/*.h', 'NativePlayer/**/*.h'
 
   s.static_framework = true
+  
+  # Ensure C files are compiled with proper flags
+  s.compiler_flags = '-DHAVE_PTHREADS'
 
-  # @ uncomment next 3 lines to debug or use your custom ijkplayer build
-  # 去除下面 3 行代码开头的注释 #，以便于进行调试或者使用自定义构建的 ijkplayer 产物
-  # s.preserve_paths = 'Frameworks/*.framework'
-  # s.vendored_frameworks = 'Frameworks/IJKMediaPlayer.framework'
-  # s.xcconfig = { 'LD_RUNPATH_SEARCH_PATHS' => '"$(PODS_ROOT)/Frameworks/"' }
+  # Legacy ijkplayer support removed - now using native FFmpeg-based player
+  # See NativePlayer/ directory for implementation
 
   s.libraries = "bz2", "z", "stdc++", "c++"
   s.dependency 'Flutter'
@@ -29,11 +30,9 @@ Flutter plugin for ijkplayer
   # Use vendored FFmpeg frameworks for native player
   s.vendored_frameworks = 'Frameworks/libavcodec.framework', 'Frameworks/libavformat.framework', 'Frameworks/libavutil.framework'
 
-  # BIJKPlayer dependency (OPTIONAL)
-  # Comment out to use ONLY the new FFmpeg-based native player
-  # Uncomment if you need the legacy FijkPlayer class (befovy.com/fijk channel)
-  # Note: Adds ~15MB to app size
-  # s.dependency 'BIJKPlayer', '~> 0.7.16'
+  # BIJKPlayer dependency REMOVED
+  # Now using native FFmpeg-based player exclusively (NativePlayer/)
+  # Legacy ijkplayer support discontinued as of v0.11.0
 
   s.ios.deployment_target = '9.0'
   

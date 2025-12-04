@@ -45,9 +45,24 @@ add_library(fijkplayer_demuxer SHARED
     async_io_protocol.c
 )
 
+# Add packet queue library (ijkplayer architecture)
+add_library(fijkplayer_packet_queue SHARED
+    packet_queue.c
+)
+
 # Add MediaCodec decoder library
 add_library(fijkplayer_decoder SHARED
     mediacodec_decoder.c
+)
+
+# Add audio decoder library
+add_library(fijkplayer_audio_decoder SHARED
+    audio_decoder.c
+)
+
+# Add audio queue library (PCM buffering for playback)
+add_library(fijkplayer_audio_queue SHARED
+    audio_queue.c
 )
 
 # Add FFmpeg software decoder library (for diagnostics)
@@ -84,6 +99,11 @@ target_include_directories(fijkplayer_demuxer PRIVATE
 )
 
 target_include_directories(fijkplayer_decoder PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_audio_decoder PRIVATE
     ${FFMPEG_INCLUDE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
@@ -152,6 +172,21 @@ target_link_libraries(fijkplayer_decoder
     avutil
 )
 
+# Link audio decoder
+target_link_libraries(fijkplayer_audio_decoder
+    ${log-lib}
+    ${android-lib}
+    ${mediandk-lib}
+    avformat
+    avcodec
+    avutil
+)
+
+# Link audio queue
+target_link_libraries(fijkplayer_audio_queue
+    ${log-lib}
+)
+
 # Link FFmpeg software decoder
 target_link_libraries(fijkplayer_soft_decoder
     ${log-lib}
@@ -165,6 +200,12 @@ target_link_libraries(fijkplayer_frame_queue
     ${log-lib}
 )
 
+# Link packet queue
+target_link_libraries(fijkplayer_packet_queue
+    ${log-lib}
+    fijkplayer_demuxer
+)
+
 # Link OpenGL renderer
 target_link_libraries(fijkplayer_gl_renderer
     ${log-lib}
@@ -175,7 +216,10 @@ target_link_libraries(fijkplayer_gl_renderer
 # Link native player (with all dependencies)
 target_link_libraries(fijkplayer_native_player
     fijkplayer_demuxer
+    fijkplayer_packet_queue
     fijkplayer_decoder
+    fijkplayer_audio_decoder
+    fijkplayer_audio_queue
     fijkplayer_soft_decoder
     fijkplayer_frame_queue
     fijkplayer_gl_renderer
