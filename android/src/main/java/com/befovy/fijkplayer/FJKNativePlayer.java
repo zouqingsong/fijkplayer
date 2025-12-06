@@ -83,6 +83,22 @@ public class FJKNativePlayer {
     }
     
     /**
+     * Set playback mode for different scenarios
+     * 
+     * @param mode Playback mode: 0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED
+     * @param bufferMs Custom buffer size in milliseconds (or -1 for default)
+     * @param enableAudio Whether to enable audio decoding (ignored if mode doesn't support audio)
+     * @param maxLatencyMs Maximum acceptable latency in milliseconds (or -1 for default)
+     * @param enableFrameDrop Whether to enable frame dropping when behind schedule
+     */
+    public void setPlaybackMode(int mode, int bufferMs, boolean enableAudio, int maxLatencyMs, boolean enableFrameDrop) {
+        if (mNativeHandle == 0) {
+            throw new IllegalStateException("Native player not initialized");
+        }
+        nativeSetPlaybackMode(mNativeHandle, mode, bufferMs, enableAudio ? 1 : 0, maxLatencyMs, enableFrameDrop ? 1 : 0);
+    }
+    
+    /**
      * Prepare player asynchronously
      * EVENT_PREPARED will be fired when ready
      */
@@ -304,6 +320,7 @@ public class FJKNativePlayer {
     private native long nativeInit();
     private native void nativeSetDataSource(long handle, String url);
     private native void nativeSetSurface(long handle, Surface surface);
+    private native void nativeSetPlaybackMode(long handle, int mode, int bufferMs, int enableAudio, int maxLatencyMs, int enableFrameDrop);
     private native void nativePrepareAsync(long handle);
     private native void nativeStart(long handle);
     private native void nativePause(long handle);

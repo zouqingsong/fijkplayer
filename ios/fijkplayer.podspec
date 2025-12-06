@@ -23,12 +23,9 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
 
   # Legacy ijkplayer support removed - now using native FFmpeg-based player
   # See NativePlayer/ directory for implementation
-
+  
   s.libraries = "bz2", "z", "stdc++", "c++"
   s.dependency 'Flutter'
-
-  # Use vendored FFmpeg frameworks for native player
-  s.vendored_frameworks = 'Frameworks/libavcodec.framework', 'Frameworks/libavformat.framework', 'Frameworks/libavutil.framework'
 
   # BIJKPlayer dependency REMOVED
   # Now using native FFmpeg-based player exclusively (NativePlayer/)
@@ -36,14 +33,41 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
 
   s.ios.deployment_target = '9.0'
   
-  # FFmpeg header search paths for native player
+  # Preserve binaries - don't strip symbols
+  s.preserve_paths = 'FFmpeg/lib/**/*', 'FFmpeg/include/**/*'
+  
+  # Configure for both device and simulator
+  s.pod_target_xcconfig = {
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
+    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/lib/simulator"',
+    'OTHER_LDFLAGS' => '-lavcodec -lavformat -lavutil'
+  }
+  
+  # User target xcconfig - propagates to the main app
+  s.user_target_xcconfig = {
+    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/simulator"',
+    'OTHER_LDFLAGS' => '-lavcodec -lavformat -lavutil'
+  }
+  
+  # FFmpeg header search paths
   s.xcconfig = { 
-    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/include" "$(PODS_TARGET_SRCROOT)/Frameworks/libavcodec.framework/Headers" "$(PODS_TARGET_SRCROOT)/Frameworks/libavformat.framework/Headers" "$(PODS_TARGET_SRCROOT)/Frameworks/libavutil.framework/Headers"',
+    'HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/include"',
     'USER_HEADER_SEARCH_PATHS' => '"$(PODS_TARGET_SRCROOT)/FFmpeg/include"',
     'CLANG_ALLOW_NON_MODULAR_INCLUDES_IN_FRAMEWORK_MODULES' => 'YES'
   }
   
   # System frameworks needed for native player
   s.frameworks = 'VideoToolbox', 'CoreVideo', 'CoreMedia', 'CoreFoundation', 'AudioToolbox', 'AVFoundation', 'Accelerate'
+  
+  # Script phase to copy FFmpeg dylibs to app bundle
+  s.script_phases = [
+    {
+      :name => 'Copy FFmpeg Libraries',
+      :script => 'set -e; if [ "${PLATFORM_NAME}" = "iphoneos" ]; then LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib/arm64"; else LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib/simulator"; fi; mkdir -p "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"; for lib in libavcodec.dylib libavformat.dylib libavutil.dylib; do if [ -f "${LIB_DIR}/${lib}" ]; then cp "${LIB_DIR}/${lib}" "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"; fi; done',
+      :execution_position => :after_compile
+    }
+  ]
 end
 

@@ -92,8 +92,4 @@ android {
 dependencies {
     // AndroidX dependencies
     implementation 'androidx.annotation:annotation:1.2.0'
-    
-    // Flutter plugin dependency - Use provided scope to avoid build issues
-    // The actual Flutter embedding will be provided by the Flutter app at runtime
-    compileOnly 'io.flutter:flutter_embedding_debug:1.0.0'
 }

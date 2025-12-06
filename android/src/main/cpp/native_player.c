@@ -137,6 +137,8 @@ NativePlayer* native_player_create(JNIEnv* env, jobject thiz) {
     player->options.enable_frame_drop = true;
     player->options.max_video_width = 0;
     player->options.max_video_height = 0;
+    player->options.enable_audio = 1;      // Audio enabled by default
+    player->options.max_latency_ms = 0;     // No latency constraint by default
     
     LOGD("Native player created");
     return player;
@@ -197,6 +199,53 @@ int native_player_set_surface(NativePlayer* player, JNIEnv* env, jobject surface
             return -1;
         }
         LOGD("Surface set: %p", player->native_window);
+    }
+    
+    pthread_mutex_unlock(&player->state_mutex);
+    return 0;
+}
+
+int native_player_set_playback_mode(NativePlayer* player, int mode, int bufferMs, 
+                                     int enableAudio, int maxLatencyMs, int enableFrameDrop) {
+    if (!player) return -1;
+    
+    pthread_mutex_lock(&player->state_mutex);
+    
+    LOGI("⚙️ Setting playback mode: mode=%d, buffer=%dms, audio=%d, maxLatency=%dms, frameDrop=%d",
+         mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop);
+    
+    // Mode 0: LIVE_LOW_LATENCY (no audio, minimum latency, aggressive frame drop)
+    // Mode 1: LIVE_WITH_AUDIO (audio sync, low latency, moderate frame drop)
+    // Mode 2: VOD_OPTIMIZED (smooth playback, larger buffer, no frame drop)
+    
+    switch (mode) {
+        case 0: // LIVE_LOW_LATENCY
+            player->options.buffer_size = (bufferMs > 0) ? (bufferMs / 100) : 1;  // ~1-2 frames
+            player->options.enable_frame_drop = (enableFrameDrop >= 0) ? enableFrameDrop : 1;
+            player->options.max_latency_ms = (maxLatencyMs > 0) ? maxLatencyMs : 200;
+            player->options.enable_audio = 0;  // No audio for low latency
+            LOGI("📹 LIVE_LOW_LATENCY: buffer=%d frames, max_latency=%dms, frame_drop=ON, audio=OFF",
+                 player->options.buffer_size, player->options.max_latency_ms);
+            break;
+            
+        case 1: // LIVE_WITH_AUDIO
+            player->options.buffer_size = (bufferMs > 0) ? (bufferMs / 100) : 5;  // ~5 frames
+            player->options.enable_frame_drop = (enableFrameDrop >= 0) ? enableFrameDrop : 1;
+            player->options.max_latency_ms = (maxLatencyMs > 0) ? maxLatencyMs : 1000;
+            player->options.enable_audio = (enableAudio >= 0) ? enableAudio : 1;
+            LOGI("🎬 LIVE_WITH_AUDIO: buffer=%d frames, max_latency=%dms, frame_drop=MODERATE, audio=ON",
+                 player->options.buffer_size, player->options.max_latency_ms);
+            break;
+            
+        case 2: // VOD_OPTIMIZED (default)
+        default:
+            player->options.buffer_size = (bufferMs > 0) ? (bufferMs / 1000) : 10;  // ~10 frames
+            player->options.enable_frame_drop = (enableFrameDrop >= 0) ? enableFrameDrop : 0;
+            player->options.max_latency_ms = 0;  // No latency constraint
+            player->options.enable_audio = (enableAudio >= 0) ? enableAudio : 1;
+            LOGI("🎞️ VOD_OPTIMIZED: buffer=%d frames, frame_drop=OFF, audio=ON",
+                 player->options.buffer_size);
+            break;
     }
     
     pthread_mutex_unlock(&player->state_mutex);

@@ -72,6 +72,8 @@ typedef struct {
     bool enable_frame_drop;      // Drop frames when behind (default: true)
     int max_video_width;         // Max video width (0 = no limit)
     int max_video_height;        // Max video height (0 = no limit)
+    int enable_audio;            // Enable audio decoding/playback (default: true)
+    int max_latency_ms;          // Maximum acceptable latency for live streams (0 = no limit)
 } PlayerOptions;
 
 // Player statistics
@@ -127,6 +129,27 @@ int native_player_set_options(NativePlayer* player, const PlayerOptions* options
  * @return 0 on success, -1 on error
  */
 int native_player_set_surface(NativePlayer* player, JNIEnv* env, jobject surface);
+
+/**
+ * Set playback mode for different scenarios
+ * 
+ * Configure the player for optimal performance based on use case:
+ * - Mode 0 (LIVE_LOW_LATENCY): Real-time live video, no audio, minimum latency
+ * - Mode 1 (LIVE_WITH_AUDIO): Live video with synchronized audio
+ * - Mode 2 (VOD_OPTIMIZED): Video-on-demand with smooth buffering
+ * 
+ * Should be called after setDataSource and before prepareAsync
+ * 
+ * @param player Player handle
+ * @param mode Playback mode (0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED)
+ * @param bufferMs Custom buffer size in milliseconds (-1 for mode default)
+ * @param enableAudio Enable audio decoding/playback (-1 for mode default)
+ * @param maxLatencyMs Maximum acceptable latency in ms (-1 for mode default)
+ * @param enableFrameDrop Enable frame dropping when behind (-1 for mode default)
+ * @return 0 on success, -1 on error
+ */
+int native_player_set_playback_mode(NativePlayer* player, int mode, int bufferMs, 
+                                     int enableAudio, int maxLatencyMs, int enableFrameDrop);
 
 /**
  * Prepare player asynchronously

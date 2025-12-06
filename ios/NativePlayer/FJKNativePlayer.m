@@ -25,6 +25,13 @@
     double _audioClock;
     NSLock *_audioClockLock;
     
+    // Playback mode configuration
+    NSInteger _playbackMode;      // 0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED
+    NSInteger _bufferSize;        // Number of frames to buffer
+    BOOL _enableAudio;            // Whether to enable audio
+    NSInteger _maxLatencyMs;      // Maximum acceptable latency
+    BOOL _enableFrameDrop;        // Whether to drop frames when behind
+    
     // State
     FJKPlayerState _state;
     NSString *_dataSource;
@@ -73,6 +80,13 @@
         _audioStreamIndex = -1;
         _audioClock = 0.0;
         _lastVideoPts = -1;
+        
+        // Default playback configuration (VOD optimized)
+        _playbackMode = 2;        // VOD_OPTIMIZED
+        _bufferSize = 10;         // 10 frames
+        _enableAudio = YES;       // Audio enabled
+        _maxLatencyMs = 0;        // No latency constraint
+        _enableFrameDrop = NO;    // No frame dropping
         
         NSLog(@"[FJKNativePlayer] Initialized");
     }
@@ -128,6 +142,57 @@
     [_stateLock unlock];
     
     NSLog(@"[FJKNativePlayer] Data source set: %@", url);
+    return 0;
+}
+
+- (int)setPlaybackMode:(NSInteger)mode
+              bufferMs:(NSInteger)bufferMs
+           enableAudio:(NSInteger)enableAudio
+         maxLatencyMs:(NSInteger)maxLatencyMs
+       enableFrameDrop:(NSInteger)enableFrameDrop {
+    
+    [_stateLock lock];
+    
+    NSLog(@"[FJKNativePlayer] ⚙️ Setting playback mode: mode=%ld, buffer=%ldms, audio=%ld, maxLatency=%ldms, frameDrop=%ld",
+          (long)mode, (long)bufferMs, (long)enableAudio, (long)maxLatencyMs, (long)enableFrameDrop);
+    
+    _playbackMode = mode;
+    
+    // Mode 0: LIVE_LOW_LATENCY (no audio, minimum latency, aggressive frame drop)
+    // Mode 1: LIVE_WITH_AUDIO (audio sync, low latency, moderate frame drop)
+    // Mode 2: VOD_OPTIMIZED (smooth playback, larger buffer, no frame drop)
+    
+    switch (mode) {
+        case 0: // LIVE_LOW_LATENCY
+            _bufferSize = (bufferMs > 0) ? (bufferMs / 100) : 1;  // ~1-2 frames
+            _enableFrameDrop = (enableFrameDrop >= 0) ? (enableFrameDrop != 0) : YES;
+            _maxLatencyMs = (maxLatencyMs > 0) ? maxLatencyMs : 200;
+            _enableAudio = NO;  // No audio for low latency
+            NSLog(@"[FJKNativePlayer] 📹 LIVE_LOW_LATENCY: buffer=%ld frames, max_latency=%ldms, frame_drop=ON, audio=OFF",
+                  (long)_bufferSize, (long)_maxLatencyMs);
+            break;
+            
+        case 1: // LIVE_WITH_AUDIO
+            _bufferSize = (bufferMs > 0) ? (bufferMs / 100) : 5;  // ~5 frames
+            _enableFrameDrop = (enableFrameDrop >= 0) ? (enableFrameDrop != 0) : YES;
+            _maxLatencyMs = (maxLatencyMs > 0) ? maxLatencyMs : 1000;
+            _enableAudio = (enableAudio >= 0) ? (enableAudio != 0) : YES;
+            NSLog(@"[FJKNativePlayer] 🎬 LIVE_WITH_AUDIO: buffer=%ld frames, max_latency=%ldms, frame_drop=MODERATE, audio=ON",
+                  (long)_bufferSize, (long)_maxLatencyMs);
+            break;
+            
+        case 2: // VOD_OPTIMIZED (default)
+        default:
+            _bufferSize = (bufferMs > 0) ? (bufferMs / 1000) : 10;  // ~10 frames
+            _enableFrameDrop = (enableFrameDrop >= 0) ? (enableFrameDrop != 0) : NO;
+            _maxLatencyMs = 0;  // No latency constraint
+            _enableAudio = (enableAudio >= 0) ? (enableAudio != 0) : YES;
+            NSLog(@"[FJKNativePlayer] 🎞️ VOD_OPTIMIZED: buffer=%ld frames, frame_drop=OFF, audio=ON",
+                  (long)_bufferSize);
+            break;
+    }
+    
+    [_stateLock unlock];
     return 0;
 }
 

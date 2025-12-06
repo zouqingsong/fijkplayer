@@ -488,6 +488,35 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     }
   }
 
+  /// Set playback mode for different scenarios
+  ///
+  /// Configure the player for optimal performance based on the use case:
+  /// - [FijkPlaybackMode.liveLowLatency]: Real-time live video, no audio, minimum latency
+  /// - [FijkPlaybackMode.liveWithAudio]: Live video with synchronized audio
+  /// - [FijkPlaybackMode.vodOptimized]: Video-on-demand with smooth buffering
+  ///
+  /// This method should be called after creating the player and before setting the data source.
+  ///
+  /// Example:
+  /// ```dart
+  /// // For security camera live feed
+  /// await player.setPlaybackMode(FijkPlaybackConfig.liveLowLatency());
+  /// await player.setDataSource(rtspUrl);
+  ///
+  /// // For live streaming with audio
+  /// await player.setPlaybackMode(FijkPlaybackConfig.liveWithAudio());
+  /// await player.setDataSource(rtspUrl);
+  ///
+  /// // For recorded video playback
+  /// await player.setPlaybackMode(FijkPlaybackConfig.vodOptimized());
+  /// await player.setDataSource(videoUrl);
+  /// ```
+  Future<void> setPlaybackMode(FijkPlaybackConfig config) async {
+    await _nativeSetup.future;
+    FijkLog.i("$this setPlaybackMode ${config.mode}");
+    return _channel.invokeMethod("setPlaybackMode", config.toMap());
+  }
+
   /// set volume of this player audio track
   ///
   /// This dose not change system volume.

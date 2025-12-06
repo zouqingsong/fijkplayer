@@ -44,6 +44,9 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             case "setDataSource":
                 handleSetDataSource(call, result);
                 break;
+            case "setPlaybackMode":
+                handleSetPlaybackMode(call, result);
+                break;
             case "prepare":
                 handlePrepare(result);
                 break;
@@ -132,6 +135,37 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
         } catch (Exception e) {
             Log.e(TAG, "Failed to set data source", e);
             result.error("SET_DATASOURCE_FAILED", e.getMessage(), null);
+        }
+    }
+    
+    private void handleSetPlaybackMode(MethodCall call, MethodChannel.Result result) {
+        if (player == null) {
+            result.error("NO_PLAYER", "Player not created", null);
+            return;
+        }
+        
+        try {
+            Integer mode = call.argument("mode");
+            Integer bufferMs = call.argument("customBufferMs");
+            Boolean enableAudio = call.argument("enableAudio");
+            Integer maxLatencyMs = call.argument("maxLatencyMs");
+            Boolean enableFrameDrop = call.argument("enableFrameDrop");
+            
+            // Apply defaults if null
+            if (mode == null) mode = 2; // VOD_OPTIMIZED
+            if (bufferMs == null) bufferMs = -1;
+            if (enableAudio == null) enableAudio = true;
+            if (maxLatencyMs == null) maxLatencyMs = -1;
+            if (enableFrameDrop == null) enableFrameDrop = false;
+            
+            player.setPlaybackMode(mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop);
+            result.success(null);
+            
+            Log.i(TAG, String.format("Playback mode set: mode=%d, buffer=%dms, audio=%b, maxLatency=%dms, frameDrop=%b", 
+                mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop));
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to set playback mode", e);
+            result.error("SET_PLAYBACK_MODE_FAILED", e.getMessage(), null);
         }
     }
     

@@ -87,6 +87,24 @@ typedef void (^FJKPlayerFrameCallback)(void);
 - (int)setDataSource:(NSString *)url;
 
 /**
+ * Set playback mode for different scenarios
+ * Configure the player for optimal performance based on use case.
+ * Should be called after setDataSource and before prepareAsync.
+ *
+ * @param mode Playback mode (0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED)
+ * @param bufferMs Custom buffer size in milliseconds (-1 for mode default)
+ * @param enableAudio Enable audio decoding/playback (-1 for mode default)
+ * @param maxLatencyMs Maximum acceptable latency in ms (-1 for mode default)
+ * @param enableFrameDrop Enable frame dropping when behind (-1 for mode default)
+ * @return 0 on success, negative on error
+ */
+- (int)setPlaybackMode:(NSInteger)mode
+              bufferMs:(NSInteger)bufferMs
+           enableAudio:(NSInteger)enableAudio
+         maxLatencyMs:(NSInteger)maxLatencyMs
+       enableFrameDrop:(NSInteger)enableFrameDrop;
+
+/**
  * Set output pixel buffer for rendering
  * Used for Flutter texture integration
  * @param pixelBuffer CVPixelBuffer to render into

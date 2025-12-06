@@ -96,6 +96,21 @@ JNI_METHOD(nativeSetSurface)(JNIEnv* env, jobject thiz, jlong handle, jobject su
 }
 
 JNIEXPORT void JNICALL
+JNI_METHOD(nativeSetPlaybackMode)(JNIEnv* env, jobject thiz, jlong handle, jint mode, 
+                                   jint bufferMs, jint enableAudio, jint maxLatencyMs, jint enableFrameDrop) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) {
+        LOGE("Player not initialized");
+        return;
+    }
+    
+    LOGD("nativeSetPlaybackMode: mode=%d, buffer=%dms, audio=%d, maxLatency=%dms, frameDrop=%d",
+         mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop);
+    
+    native_player_set_playback_mode(player, mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop);
+}
+
+JNIEXPORT void JNICALL
 JNI_METHOD(nativePrepareAsync)(JNIEnv* env, jobject thiz, jlong handle) {
     NativePlayer* player = (NativePlayer*)handle;
     if (!player) {

@@ -127,6 +127,8 @@
         [self handleCreate:result];
     } else if ([method isEqualToString:@"setDataSource"]) {
         [self handleSetDataSource:call result:result];
+    } else if ([method isEqualToString:@"setPlaybackMode"]) {
+        [self handleSetPlaybackMode:call result:result];
     } else if ([method isEqualToString:@"prepare"]) {
         [self handlePrepare:result];
     } else if ([method isEqualToString:@"start"]) {
@@ -188,6 +190,42 @@
         @"success": @(ret == 0),
         @"error": ret != 0 ? @"Failed to set data source" : [NSNull null]
     });
+}
+
+- (void)handleSetPlaybackMode:(FlutterMethodCall *)call result:(FlutterResult)result {
+    if (!_player) {
+        result(@{@"error": @"Player not created"});
+        return;
+    }
+    
+    NSNumber *mode = call.arguments[@"mode"];
+    NSNumber *bufferMs = call.arguments[@"customBufferMs"];
+    NSNumber *enableAudio = call.arguments[@"enableAudio"];
+    NSNumber *maxLatencyMs = call.arguments[@"maxLatencyMs"];
+    NSNumber *enableFrameDrop = call.arguments[@"enableFrameDrop"];
+    
+    // Apply defaults if nil
+    NSInteger modeValue = mode ? [mode integerValue] : 2; // VOD_OPTIMIZED
+    NSInteger bufferMsValue = bufferMs ? [bufferMs integerValue] : -1;
+    NSInteger enableAudioValue = enableAudio ? ([enableAudio boolValue] ? 1 : 0) : -1;
+    NSInteger maxLatencyMsValue = maxLatencyMs ? [maxLatencyMs integerValue] : -1;
+    NSInteger enableFrameDropValue = enableFrameDrop ? ([enableFrameDrop boolValue] ? 1 : 0) : -1;
+    
+    int ret = [_player setPlaybackMode:modeValue
+                              bufferMs:bufferMsValue
+                           enableAudio:enableAudioValue
+                         maxLatencyMs:maxLatencyMsValue
+                       enableFrameDrop:enableFrameDropValue];
+    
+    result(@{
+        @"success": @(ret == 0),
+        @"error": ret != 0 ? @"Failed to set playback mode" : [NSNull null]
+    });
+    
+    if (ret == 0) {
+        NSLog(@"[FJKNativePlayerHandler] Playback mode set: mode=%ld, buffer=%ldms, audio=%ld, maxLatency=%ldms, frameDrop=%ld",
+              (long)modeValue, (long)bufferMsValue, (long)enableAudioValue, (long)maxLatencyMsValue, (long)enableFrameDropValue);
+    }
 }
 
 - (void)handlePrepare:(FlutterResult)result {
