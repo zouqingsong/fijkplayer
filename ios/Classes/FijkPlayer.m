@@ -271,11 +271,12 @@ static const int end = 9;
 
 - (void)notifyVideoSize {
     NSDictionary *event = @{
-        @"event": @"video_size",
+        @"event": @"size_changed",
         @"width": @(_width),
         @"height": @(_height)
     };
     [_eventSink success:event];
+    NSLog(@"[FijkPlayer] Sent size_changed event: %dx%d", _width, _height);
 }
 
 - (void)notifySeekComplete {
@@ -295,6 +296,19 @@ static const int end = 9;
 - (FlutterError *_Nullable)onListenWithArguments:(id _Nullable)arguments
                                        eventSink:(nonnull FlutterEventSink)events {
     [_eventSink setDelegate:events];
+    NSLog(@"[FijkPlayer] EventChannel listener attached");
+    
+    // Send cached video size immediately if available
+    if (_width > 0 && _height > 0) {
+        NSDictionary *sizeEvent = @{
+            @"event": @"size_changed",
+            @"width": @(_width),
+            @"height": @(_height)
+        };
+        [_eventSink success:sizeEvent];
+        NSLog(@"[FijkPlayer] Sent cached video size: %dx%d", _width, _height);
+    }
+    
     return nil;
 }
 
