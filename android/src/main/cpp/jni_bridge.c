@@ -157,6 +157,14 @@ JNI_METHOD(nativeStop)(JNIEnv* env, jobject thiz, jlong handle) {
 }
 
 JNIEXPORT void JNICALL
+JNI_METHOD(nativeReset)(JNIEnv* env, jobject thiz, jlong handle) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return;
+    
+    native_player_reset(player);
+}
+
+JNIEXPORT void JNICALL
 JNI_METHOD(nativeSeekTo)(JNIEnv* env, jobject thiz, jlong handle, jlong position_ms) {
     NativePlayer* player = (NativePlayer*)handle;
     if (!player) return;

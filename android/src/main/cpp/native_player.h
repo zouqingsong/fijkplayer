@@ -196,6 +196,15 @@ int native_player_resume(NativePlayer* player);
 int native_player_stop(NativePlayer* player);
 
 /**
+ * Reset player to IDLE state
+ * Stops playback, releases resources, and allows setting a new data source
+ * 
+ * @param player Player handle
+ * @return 0 on success, -1 on error
+ */
+int native_player_reset(NativePlayer* player);
+
+/**
  * Seek to position
  * 
  * @param player Player handle

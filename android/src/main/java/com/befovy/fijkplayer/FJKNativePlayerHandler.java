@@ -3,131 +3,135 @@ package com.befovy.fijkplayer;
 import android.content.Context;
 import android.util.Log;
 import android.view.Surface;
-
 import androidx.annotation.NonNull;
-
-import java.util.HashMap;
-import java.util.Map;
-
+import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Handler for NativePlayer - Direct method channel access
  * Channel: befovy.com/fijk/native_player
  */
-public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
-    
+public class FJKNativePlayerHandler
+    implements MethodChannel.MethodCallHandler, EventChannel.StreamHandler {
+
     private static final String TAG = "FJKNativePlayerHandler";
-    
+
     private final TextureRegistry textureRegistry;
     private final Context context;
     private FJKNativePlayer player;
     private TextureRegistry.SurfaceTextureEntry textureEntry;
     private SurfaceTextureManager surfaceTextureManager;
     private MethodChannel.Result prepareResult;
-    
-    public FJKNativePlayerHandler(Context context, TextureRegistry textureRegistry) {
+    private EventChannel.EventSink eventSink;
+
+    public FJKNativePlayerHandler(Context context,
+                                  TextureRegistry textureRegistry) {
         this.context = context;
         this.textureRegistry = textureRegistry;
     }
-    
+
     @Override
-    public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+    public void onMethodCall(@NonNull MethodCall call,
+                             @NonNull MethodChannel.Result result) {
         Log.d(TAG, "Method call: " + call.method);
-        
+
         switch (call.method) {
-            case "create":
-                handleCreate(result);
-                break;
-            case "setDataSource":
-                handleSetDataSource(call, result);
-                break;
-            case "setPlaybackMode":
-                handleSetPlaybackMode(call, result);
-                break;
-            case "prepare":
-                handlePrepare(result);
-                break;
-            case "start":
-                handleStart(result);
-                break;
-            case "pause":
-                handlePause(result);
-                break;
-            case "stop":
-                handleStop(result);
-                break;
-            case "seekTo":
-                handleSeekTo(call, result);
-                break;
-            case "getPosition":
-                handleGetPosition(result);
-                break;
-            case "getDuration":
-                handleGetDuration(result);
-                break;
-            case "getVideoSize":
-                handleGetVideoSize(result);
-                break;
-            case "isPlaying":
-                handleIsPlaying(result);
-                break;
-            case "release":
-                handleRelease(result);
-                break;
-            default:
-                result.notImplemented();
+        case "create":
+            handleCreate(result);
+            break;
+        case "setDataSource":
+            handleSetDataSource(call, result);
+            break;
+        case "setPlaybackMode":
+            handleSetPlaybackMode(call, result);
+            break;
+        case "prepare":
+            handlePrepare(result);
+            break;
+        case "start":
+            handleStart(result);
+            break;
+        case "pause":
+            handlePause(result);
+            break;
+        case "stop":
+            handleStop(result);
+            break;
+        case "seekTo":
+            handleSeekTo(call, result);
+            break;
+        case "getPosition":
+            handleGetPosition(result);
+            break;
+        case "getDuration":
+            handleGetDuration(result);
+            break;
+        case "getVideoSize":
+            handleGetVideoSize(result);
+            break;
+        case "isPlaying":
+            handleIsPlaying(result);
+            break;
+        case "release":
+            handleRelease(result);
+            break;
+        default:
+            result.notImplemented();
         }
     }
-    
+
     private void handleCreate(MethodChannel.Result result) {
         try {
             // Create texture for video rendering
             textureEntry = textureRegistry.createSurfaceTexture();
-            
+
             // Create native player first
             player = new FJKNativePlayer();
-            
+
             // Create SurfaceTextureManager with the TextureEntry
-            // This allows the manager to notify Flutter when frames are available
+            // This allows the manager to notify Flutter when frames are
+            // available
             surfaceTextureManager = new SurfaceTextureManager(textureEntry);
-            
+
             // Set video size for buffer allocation
             // Will be updated when video info is available
             surfaceTextureManager.setBufferSize(1920, 1080);
-            
+
             // Get Surface from manager and set to player
             Surface surface = surfaceTextureManager.getSurface();
             player.setSurface(surface);
-            
+
             // Set event callback
             player.setEventCallback(this::onPlayerEvent);
-            
+
             Map<String, Object> reply = new HashMap<>();
             reply.put("textureId", textureEntry.id());
             result.success(reply);
-            
+
             Log.i(TAG, "Player created with texture ID: " + textureEntry.id());
         } catch (Exception e) {
             Log.e(TAG, "Failed to create player", e);
             result.error("CREATE_FAILED", e.getMessage(), null);
         }
     }
-    
-    private void handleSetDataSource(MethodCall call, MethodChannel.Result result) {
+
+    private void handleSetDataSource(MethodCall call,
+                                     MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         String url = call.argument("url");
         if (url == null) {
             result.error("INVALID_URL", "URL is required", null);
             return;
         }
-        
+
         try {
             player.setDataSource(url);
             result.success(null);
@@ -137,44 +141,54 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("SET_DATASOURCE_FAILED", e.getMessage(), null);
         }
     }
-    
-    private void handleSetPlaybackMode(MethodCall call, MethodChannel.Result result) {
+
+    private void handleSetPlaybackMode(MethodCall call,
+                                       MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             Integer mode = call.argument("mode");
             Integer bufferMs = call.argument("customBufferMs");
             Boolean enableAudio = call.argument("enableAudio");
             Integer maxLatencyMs = call.argument("maxLatencyMs");
             Boolean enableFrameDrop = call.argument("enableFrameDrop");
-            
+
             // Apply defaults if null
-            if (mode == null) mode = 2; // VOD_OPTIMIZED
-            if (bufferMs == null) bufferMs = -1;
-            if (enableAudio == null) enableAudio = true;
-            if (maxLatencyMs == null) maxLatencyMs = -1;
-            if (enableFrameDrop == null) enableFrameDrop = false;
-            
-            player.setPlaybackMode(mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop);
+            if (mode == null)
+                mode = 2; // VOD_OPTIMIZED
+            if (bufferMs == null)
+                bufferMs = -1;
+            if (enableAudio == null)
+                enableAudio = true;
+            if (maxLatencyMs == null)
+                maxLatencyMs = -1;
+            if (enableFrameDrop == null)
+                enableFrameDrop = false;
+
+            player.setPlaybackMode(mode, bufferMs, enableAudio, maxLatencyMs,
+                                   enableFrameDrop);
             result.success(null);
-            
-            Log.i(TAG, String.format("Playback mode set: mode=%d, buffer=%dms, audio=%b, maxLatency=%dms, frameDrop=%b", 
-                mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop));
+
+            Log.i(TAG,
+                  String.format("Playback mode set: mode=%d, buffer=%dms, " +
+                                "audio=%b, maxLatency=%dms, frameDrop=%b",
+                                mode, bufferMs, enableAudio, maxLatencyMs,
+                                enableFrameDrop));
         } catch (Exception e) {
             Log.e(TAG, "Failed to set playback mode", e);
             result.error("SET_PLAYBACK_MODE_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handlePrepare(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             // Store result for async callback
             prepareResult = result;
@@ -186,13 +200,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("PREPARE_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleStart(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             player.start();
             result.success(null);
@@ -202,13 +216,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("START_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handlePause(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             player.pause();
             result.success(null);
@@ -218,13 +232,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("PAUSE_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleStop(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             player.stop();
             result.success(null);
@@ -234,19 +248,19 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("STOP_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleSeekTo(MethodCall call, MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         Integer position = call.argument("position");
         if (position == null) {
             result.error("INVALID_POSITION", "Position is required", null);
             return;
         }
-        
+
         try {
             player.seekTo(position.longValue());
             result.success(null);
@@ -256,13 +270,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("SEEK_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleGetPosition(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             long position = player.getCurrentPosition();
             result.success(position);
@@ -271,13 +285,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("GET_POSITION_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleGetDuration(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             long duration = player.getDuration();
             result.success(duration);
@@ -286,13 +300,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("GET_DURATION_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleGetVideoSize(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             Map<String, Object> size = new HashMap<>();
             size.put("width", player.getVideoWidth());
@@ -303,13 +317,13 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("GET_SIZE_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleIsPlaying(MethodChannel.Result result) {
         if (player == null) {
             result.error("NO_PLAYER", "Player not created", null);
             return;
         }
-        
+
         try {
             boolean playing = player.isPlaying();
             result.success(playing);
@@ -318,7 +332,7 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             result.error("IS_PLAYING_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void handleRelease(MethodChannel.Result result) {
         try {
             if (player != null) {
@@ -326,49 +340,64 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
                 player = null;
                 Log.i(TAG, "Player released");
             }
-            
+
             if (surfaceTextureManager != null) {
                 surfaceTextureManager.release();
                 surfaceTextureManager = null;
                 Log.i(TAG, "SurfaceTextureManager released");
             }
-            
+
             if (textureEntry != null) {
                 textureEntry.release();
                 textureEntry = null;
             }
-            
+
             result.success(null);
         } catch (Exception e) {
             Log.e(TAG, "Failed to release", e);
             result.error("RELEASE_FAILED", e.getMessage(), null);
         }
     }
-    
+
     private void onPlayerEvent(int eventType, int arg1, int arg2) {
         String eventName = getEventName(eventType);
-        Log.i(TAG, "Player event: " + eventName + " (" + eventType + "), arg1=" + arg1 + ", arg2=" + arg2);
-        
+        Log.i(TAG, "Player event: " + eventName + " (" + eventType +
+                       "), arg1=" + arg1 + ", arg2=" + arg2);
+
+        // Send VIDEO_SIZE_CHANGED event to Flutter
+        if (eventType == FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED &&
+            eventSink != null) {
+            Map<String, Object> event = new HashMap<>();
+            event.put("event", "size_changed");
+            event.put("width", arg1);
+            event.put("height", arg2);
+            eventSink.success(event);
+            Log.i(TAG,
+                  "Sent size_changed event to Flutter: " + arg1 + "x" + arg2);
+        }
+
         // Handle async prepare completion
-        if (eventType == FJKNativePlayer.EVENT_PREPARED && prepareResult != null) {
+        if (eventType == FJKNativePlayer.EVENT_PREPARED &&
+            prepareResult != null) {
             int width = player.getVideoWidth();
             int height = player.getVideoHeight();
-            
+
             // Log audio stream information
             if (player.hasAudio()) {
                 int sampleRate = player.getAudioSampleRate();
                 int channels = player.getAudioChannels();
-                Log.i(TAG, "🔊 Audio detected: " + sampleRate + " Hz, " + channels + " channels");
+                Log.i(TAG, "🔊 Audio detected: " + sampleRate + " Hz, " +
+                               channels + " channels");
             } else {
                 Log.i(TAG, "No audio stream - video only playback");
             }
-            
+
             // Update SurfaceTexture buffer size with actual video dimensions
             if (surfaceTextureManager != null && width > 0 && height > 0) {
                 surfaceTextureManager.setBufferSize(width, height);
                 Log.i(TAG, "Updated buffer size to " + width + "x" + height);
             }
-            
+
             Map<String, Object> info = new HashMap<>();
             info.put("width", width);
             info.put("height", height);
@@ -382,25 +411,49 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
             prepareResult = null;
             Log.i(TAG, "Prepare completed: " + info);
         }
-        
+
         if (eventType == FJKNativePlayer.EVENT_ERROR && prepareResult != null) {
-            prepareResult.error("PREPARE_ERROR", "Failed to prepare: code=" + arg1, null);
+            prepareResult.error("PREPARE_ERROR",
+                                "Failed to prepare: code=" + arg1, null);
             prepareResult = null;
         }
     }
-    
+
     private String getEventName(int eventType) {
         switch (eventType) {
-            case FJKNativePlayer.EVENT_PREPARED: return "PREPARED";
-            case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED: return "VIDEO_SIZE_CHANGED";
-            case FJKNativePlayer.EVENT_STARTED: return "STARTED";
-            case FJKNativePlayer.EVENT_PAUSED: return "PAUSED";
-            case FJKNativePlayer.EVENT_SEEK_COMPLETE: return "SEEK_COMPLETE";
-            case FJKNativePlayer.EVENT_COMPLETED: return "COMPLETED";
-            case FJKNativePlayer.EVENT_ERROR: return "ERROR";
-            case FJKNativePlayer.EVENT_BUFFERING: return "BUFFERING";
-            case FJKNativePlayer.EVENT_INFO: return "INFO";
-            default: return "UNKNOWN";
+        case FJKNativePlayer.EVENT_PREPARED:
+            return "PREPARED";
+        case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED:
+            return "VIDEO_SIZE_CHANGED";
+        case FJKNativePlayer.EVENT_STARTED:
+            return "STARTED";
+        case FJKNativePlayer.EVENT_PAUSED:
+            return "PAUSED";
+        case FJKNativePlayer.EVENT_SEEK_COMPLETE:
+            return "SEEK_COMPLETE";
+        case FJKNativePlayer.EVENT_COMPLETED:
+            return "COMPLETED";
+        case FJKNativePlayer.EVENT_ERROR:
+            return "ERROR";
+        case FJKNativePlayer.EVENT_BUFFERING:
+            return "BUFFERING";
+        case FJKNativePlayer.EVENT_INFO:
+            return "INFO";
+        default:
+            return "UNKNOWN";
         }
+    }
+
+    // EventChannel.StreamHandler implementation
+    @Override
+    public void onListen(Object arguments, EventChannel.EventSink events) {
+        this.eventSink = events;
+        Log.d(TAG, "Event stream listener attached");
+    }
+
+    @Override
+    public void onCancel(Object arguments) {
+        this.eventSink = null;
+        Log.d(TAG, "Event stream listener cancelled");
     }
 }

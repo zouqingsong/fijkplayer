@@ -671,6 +671,80 @@ int native_player_stop(NativePlayer* player) {
     return 0;
 }
 
+int native_player_reset(NativePlayer* player) {
+    if (!player) return -1;
+    
+    LOGI("Resetting player to IDLE state");
+    
+    pthread_mutex_lock(&player->state_mutex);
+    int current_state = player->state;
+    pthread_mutex_unlock(&player->state_mutex);
+    
+    // If playing or paused, stop first
+    if (current_state == PLAYER_STATE_STARTED || current_state == PLAYER_STATE_PAUSED) {
+        native_player_stop(player);
+    }
+    
+    // Close demuxer (will be recreated in prepare)
+    if (player->demuxer) {
+        ff_demuxer_close(player->demuxer);
+        player->demuxer = NULL;
+    }
+    
+    // Clean up decoder (will be recreated in prepare)
+    if (player->decoder) {
+        mediacodec_decoder_destroy(player->decoder);
+        player->decoder = NULL;
+    }
+    
+    // Clean up audio decoder
+    if (player->audio_decoder) {
+        audio_decoder_destroy(player->audio_decoder);
+        player->audio_decoder = NULL;
+    }
+    
+    // Clean up audio queue
+    if (player->audio_queue) {
+        audio_queue_destroy(player->audio_queue);
+        player->audio_queue = NULL;
+    }
+    
+    // Release audio renderer reference (Java object)
+    if (player->audio_renderer) {
+        JavaVM* jvm = player->jvm;
+        JNIEnv* env;
+        (*jvm)->GetEnv(jvm, (void**)&env, JNI_VERSION_1_6);
+        if (env) {
+            (*env)->DeleteGlobalRef(env, player->audio_renderer);
+        }
+        player->audio_renderer = NULL;
+    }
+    
+    // Clear packet queues
+    packet_queue_flush(&player->videoq);
+    packet_queue_flush(&player->audioq);
+    
+    // Clear frame queue
+    if (player->frame_queue) {
+        frame_queue_flush(player->frame_queue);
+    }
+    
+    // Reset state to IDLE
+    pthread_mutex_lock(&player->state_mutex);
+    player->state = PLAYER_STATE_IDLE;
+    player->stop_requested = false;
+    pthread_mutex_unlock(&player->state_mutex);
+    
+    // Clear data source
+    if (player->data_source) {
+        free(player->data_source);
+        player->data_source = NULL;
+    }
+    
+    LOGI("✅ Player reset to IDLE state - ready for new data source");
+    return 0;
+}
+
 int native_player_seek(NativePlayer* player, int64_t position_ms) {
     if (!player || !player->demuxer) return -1;
     
