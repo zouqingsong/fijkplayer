@@ -46,6 +46,7 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   
   # User target xcconfig - propagates to the main app
   s.user_target_xcconfig = {
+    'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386',
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '"$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64"',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '"$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/simulator"',
     'OTHER_LDFLAGS' => '-lavcodec -lavformat -lavutil'

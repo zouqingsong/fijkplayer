@@ -392,14 +392,14 @@ public class FJKNativePlayerHandler implements MethodChannel.MethodCallHandler {
     private String getEventName(int eventType) {
         switch (eventType) {
             case FJKNativePlayer.EVENT_PREPARED: return "PREPARED";
+            case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED: return "VIDEO_SIZE_CHANGED";
             case FJKNativePlayer.EVENT_STARTED: return "STARTED";
             case FJKNativePlayer.EVENT_PAUSED: return "PAUSED";
-            case FJKNativePlayer.EVENT_STOPPED: return "STOPPED";
+            case FJKNativePlayer.EVENT_SEEK_COMPLETE: return "SEEK_COMPLETE";
             case FJKNativePlayer.EVENT_COMPLETED: return "COMPLETED";
             case FJKNativePlayer.EVENT_ERROR: return "ERROR";
-            case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED: return "VIDEO_SIZE_CHANGED";
             case FJKNativePlayer.EVENT_BUFFERING: return "BUFFERING";
-            case FJKNativePlayer.EVENT_SEEK_COMPLETE: return "SEEK_COMPLETE";
+            case FJKNativePlayer.EVENT_INFO: return "INFO";
             default: return "UNKNOWN";
         }
     }

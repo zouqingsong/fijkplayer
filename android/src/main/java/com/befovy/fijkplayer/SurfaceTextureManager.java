@@ -32,21 +32,29 @@ public class SurfaceTextureManager {
             @Override
             public void onFrameAvailable(SurfaceTexture st) {
                 if (isReleased.get() || textureEntry == null) {
+                    Log.w(TAG, "📺 onFrameAvailable called but IGNORED (released=" + isReleased.get() + ", textureEntry=" + textureEntry + ")");
                     return;
                 }
 
                 long count = frameCount.incrementAndGet();
                 
-                // Note: Flutter should automatically handle texture updates
-                // Position updates currently trigger UI refreshes
+                // LOG IMMEDIATELY to confirm callback is firing
+                long now = System.nanoTime() / 1000000;
+                long interval = (lastFrameTime > 0) ? (now - lastFrameTime) : 0;
+                lastFrameTime = now;
                 
-                // Just track frame arrivals for debugging
-                if (count % 240 == 0) {
-                    long now = System.nanoTime() / 1000000;
-                    long interval = (lastFrameTime > 0) ? (now - lastFrameTime) : 0;
-                    lastFrameTime = now;
-                    Log.i(TAG, "📺 Frame #" + count + " arrived (interval=" + interval + "ms)");
+                if (count <= 30 || count % 60 == 0) {
+                    Log.i(TAG, "📺 onFrameAvailable called! Frame #" + count + " (interval=" + interval + "ms, thread=" + Thread.currentThread().getName() + ")");
                 }
+                
+                // DO NOT call updateTexImage() here - causes crash!
+                // Flutter's engine automatically calls it on the raster thread (which has GL context)
+                // Calling it here from main thread crashes with "invalid current EGLDisplay"
+                
+                // The SurfaceTexture buffer is limited (1-2 frames by default).
+                // After first frame fills buffer, onFrameAvailable stops being called
+                // until Flutter consumes frames via updateTexImage().
+                // Flutter's position timer (50ms) triggers rebuilds → updateTexImage().
             }
         };
 
@@ -66,6 +74,9 @@ public class SurfaceTextureManager {
         // Set frame listener on main thread with Looper
         callbackHandler = new Handler(Looper.getMainLooper());
         surfaceTexture.setOnFrameAvailableListener(frameListener, callbackHandler);
+        
+        // REMOVED: setMaxBufferedFrames() - not available before API 35
+        // Instead, Flutter's 50ms timer ensures frames are consumed fast enough
 
         // Create Surface for MediaCodec
         surface = new Surface(surfaceTexture);

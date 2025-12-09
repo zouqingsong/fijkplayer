@@ -299,9 +299,6 @@ public class FijkFFmpegPlayer {
             case FJKNativePlayer.EVENT_PAUSED:
                 eventCallback.onPaused();
                 break;
-            case FJKNativePlayer.EVENT_STOPPED:
-                eventCallback.onStopped();
-                break;
             case FJKNativePlayer.EVENT_COMPLETED:
                 eventCallback.onCompleted();
                 break;

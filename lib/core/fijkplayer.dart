@@ -115,6 +115,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   Completer<Uint8List>? _snapShot;
   Completer<void>? _recording;
   bool _isRecording = false;
+  Timer? _posTimer;
 
   FijkPlayer()
       : _nativeSetup = Completer(),
@@ -218,6 +219,27 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
         FijkState.started == current ||
         FijkState.paused == current ||
         FijkState.completed == current;
+  }
+
+  /// Start position timer to trigger periodic updates for video rendering
+  void _startPosTimer() {
+    _posTimer?.cancel();
+    // Use 50ms interval for smooth video updates (~20fps for UI refresh)
+    _posTimer = Timer.periodic(Duration(milliseconds: 50), (timer) {
+      if (state == FijkState.started) {
+        // Trigger notifyListeners to force Texture widget rebuild
+        // This allows Flutter to pull new frames from the SurfaceTexture
+        notifyListeners();
+      }
+    });
+    FijkLog.d("$this position timer started");
+  }
+
+  /// Stop position timer
+  void _stopPosTimer() {
+    _posTimer?.cancel();
+    _posTimer = null;
+    FijkLog.d("$this position timer stopped");
   }
 
   /// set option
@@ -648,6 +670,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     int cid = _callId;
     FijkLog.i("$this invoke release #$cid");
     if (isPlayable()) await stop();
+    _stopPosTimer(); // Stop position timer before release
     _setValue(value.copyWith(state: FijkState.end));
     await _nativeEventSubscription?.cancel();
     _nativeEventSubscription = null;
@@ -727,6 +750,13 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
                 prepared: false, state: fpState, exception: fijkException));
           } else {
             _setValue(value.copyWith(state: fpState, exception: fijkException));
+          }
+          
+          // Start/stop position timer based on playback state
+          if (fpState == FijkState.started) {
+            _startPosTimer();
+          } else {
+            _stopPosTimer();
           }
         }
         break;

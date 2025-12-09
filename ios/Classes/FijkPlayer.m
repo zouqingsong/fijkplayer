@@ -95,6 +95,14 @@ static const int end = 9;
         _nativePlayer.eventCallback = ^(FJKPlayerEvent event, NSInteger arg1, NSInteger arg2) {
             [weakSelf handleNativePlayerEvent:event arg1:arg1 arg2:arg2];
         };
+        
+        // Set up frame callback to notify texture when new frames are available
+        _nativePlayer.frameCallback = ^{
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf && strongSelf->_vid >= 0) {
+                [strongSelf->_textureRegistry textureFrameAvailable:strongSelf->_vid];
+            }
+        };
 
         // Setup method channel
         _methodChannel = [FlutterMethodChannel
@@ -174,9 +182,18 @@ static const int end = 9;
     if (!_nativePlayer) return nil;
     
     CVPixelBufferRef pixelBuffer = [_nativePlayer copyPixelBuffer];
+    
+    // Debug: Log texture dimensions
     if (pixelBuffer) {
-        [_textureRegistry textureFrameAvailable:_vid];
+        size_t width = CVPixelBufferGetWidth(pixelBuffer);
+        size_t height = CVPixelBufferGetHeight(pixelBuffer);
+        static int logCount = 0;
+        if (logCount++ % 120 == 0) {
+            NSLog(@"[FijkPlayer] 📐 Texture dimensions: %zux%zu (video: %dx%d)", width, height, _width, _height);
+        }
     }
+    
+    // Note: textureFrameAvailable is now called by frameCallback
     return pixelBuffer;
 }
 
@@ -185,29 +202,29 @@ static const int end = 9;
 - (void)handleNativePlayerEvent:(FJKPlayerEvent)event arg1:(NSInteger)arg1 arg2:(NSInteger)arg2 {
     switch (event) {
         case FJKPlayerEventPrepared:
+            [self notifyState:prepared];  // Notify BEFORE updating _state
             _state = prepared;
             if (_nativePlayer.videoSize.width > 0) {
                 _width = (int)_nativePlayer.videoSize.width;
                 _height = (int)_nativePlayer.videoSize.height;
             }
-            [self notifyState:prepared];
             break;
             
         case FJKPlayerEventStarted:
+            [self notifyState:started];  // Notify BEFORE updating _state
             _state = started;
-            [self notifyState:started];
             [[FijkPlugin singleInstance] onPlayingChange:1];
             break;
             
         case FJKPlayerEventPaused:
+            [self notifyState:paused];  // Notify BEFORE updating _state
             _state = paused;
-            [self notifyState:paused];
             [[FijkPlugin singleInstance] onPlayingChange:-1];
             break;
             
         case FJKPlayerEventCompleted:
+            [self notifyState:completed];  // Notify BEFORE updating _state
             _state = completed;
-            [self notifyState:completed];
             [[FijkPlugin singleInstance] onPlayingChange:-1];
             break;
             
@@ -232,12 +249,15 @@ static const int end = 9;
 }
 
 - (void)notifyState:(int)newState {
+    NSLog(@"[FijkPlayer] notifyState called: %d -> %d, eventSink=%@", _state, newState, _eventSink);
     NSDictionary *event = @{
         @"event": @"state_change",
         @"new": @(newState),
         @"old": @(_state)
     };
+    NSLog(@"[FijkPlayer] Sending state_change event: %@", event);
     [_eventSink success:event];
+    NSLog(@"[FijkPlayer] State event sent");
 }
 
 - (void)notifyError:(int)code extra:(id)extra {
@@ -281,22 +301,38 @@ static const int end = 9;
 // MARK: - Method Channel Handler
 
 - (void)handleMethodCall:(FlutterMethodCall *)call result:(FlutterResult)result {
+    NSLog(@"[FijkPlayer] ========== handleMethodCall: %@ ==========", call.method);
     if ([@"setDataSource" isEqualToString:call.method]) {
         NSString *url = call.arguments[@"url"];
+        NSLog(@"[FijkPlayer] setDataSource called with URL: %@, current state: %d", url, _state);
         int ret = [_nativePlayer setDataSource:url];
+        NSLog(@"[FijkPlayer] setDataSource returned: %d", ret);
+        if (ret == 0) {
+            NSLog(@"[FijkPlayer] State transition: %d -> %d (initialized), notifying...", _state, initialized);
+            [self notifyState:initialized];  // This reads _state as "old" before we change it
+            _state = initialized;
+            NSLog(@"[FijkPlayer] State updated to: %d", _state);
+        }
+        // Return result AFTER state change event is sent
         result(@(ret));
         
     } else if ([@"prepareAsync" isEqualToString:call.method]) {
         // Register texture
         if (_vid < 0) {
             _vid = [_textureRegistry registerTexture:self];
+            NSLog(@"[FijkPlayer] ✅ Texture registered with ID: %lld", (long long)_vid);
         }
-        [_nativePlayer prepareAsync];
+        NSLog(@"[FijkPlayer] prepareAsync called, registering texture and preparing");
+        [self notifyState:asyncPreparing];
         _state = asyncPreparing;
+        [_nativePlayer prepareAsync];
         result(@{@"id": @(_vid)});
         
     } else if ([@"start" isEqualToString:call.method]) {
+        NSLog(@"[FijkPlayer] start called, current state: %d", _state);
         int ret = [_nativePlayer start];
+        NSLog(@"[FijkPlayer] start returned: %d", ret);
+        // State change event will be sent by handleNativePlayerEvent when native player starts
         result(@(ret));
         
     } else if ([@"pause" isEqualToString:call.method]) {
@@ -305,11 +341,16 @@ static const int end = 9;
         
     } else if ([@"stop" isEqualToString:call.method]) {
         [_nativePlayer stop];
+        [self notifyState:stopped];
+        _state = stopped;
         result(@(0));
         
     } else if ([@"reset" isEqualToString:call.method]) {
-        [_nativePlayer stop];
+        NSLog(@"[FijkPlayer] reset called, current state: %d", _state);
+        [_nativePlayer cleanup];  // Fully reset to idle state
+        [self notifyState:idle];
         _state = idle;
+        NSLog(@"[FijkPlayer] State reset to idle");
         result(@(0));
         
     } else if ([@"getCurrentPosition" isEqualToString:call.method]) {
@@ -324,7 +365,10 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"setVolume" isEqualToString:call.method]) {
-        // TODO: Implement volume control
+        NSNumber *volume = call.arguments[@"volume"];
+        if (volume && _nativePlayer) {
+            [_nativePlayer setVolume:[volume floatValue]];
+        }
         result(@(0));
         
     } else if ([@"setSpeed" isEqualToString:call.method]) {
@@ -338,6 +382,11 @@ static const int end = 9;
     } else if ([@"setOption" isEqualToString:call.method]) {
         // Options not applicable to native player
         result(@(0));
+        
+    } else if ([@"setupSurface" isEqualToString:call.method]) {
+        NSLog(@"[FijkPlayer] setupSurface called, returning texture ID: %lld", (long long)_vid);
+        // Return the texture ID that was registered in prepareAsync
+        result(@(_vid));
         
     } else if ([@"release" isEqualToString:call.method]) {
         [self shutdown];

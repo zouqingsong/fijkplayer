@@ -45,7 +45,8 @@ public class FijkPlugin implements FlutterPlugin {
         );
         productionHandler = new FijkPlayerHandler(
             appContext,
-            binding.getTextureRegistry()
+            binding.getTextureRegistry(),
+            binding.getBinaryMessenger()
         );
         productionChannel.setMethodCallHandler(productionHandler);
         

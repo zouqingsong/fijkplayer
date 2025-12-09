@@ -293,6 +293,16 @@
     NSLog(@"[FJKNativePlayer] Seek to %lld ms (not implemented)", positionMs);
 }
 
+- (void)setVolume:(float)volume {
+    if (volume < 0.0) volume = 0.0;
+    if (volume > 1.0) volume = 1.0;
+    
+    if (_audioRenderer) {
+        [_audioRenderer setVolume:volume];
+        NSLog(@"[FJKNativePlayer] Volume set to: %.2f", volume);
+    }
+}
+
 - (BOOL)isLiveStream:(NSString *)url {
     if (!url) return NO;
     

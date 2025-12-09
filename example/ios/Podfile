@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-platform :ios, '12.0'
+platform :ios, '14.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -28,36 +28,17 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
+  use_frameworks! :linkage => :static
+  use_modular_headers!
+  
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
 end
 
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-  end
-  
-  # Fix shared_preferences linking bug by removing invalid linker flag
-  project_path = 'Runner.xcodeproj/project.pbxproj'
-  if File.exist?(project_path)
-    text = File.read(project_path)
-    new_text = text.gsub('-l"shared_preferences"', '')
-    File.write(project_path, new_text) if text != new_text
-    puts "Fixed shared_preferences linker flags in Podfile post_install"
-  end
-  
-  # Add a build phase to Runner target to fix linker flags before compilation
-  runner_project = installer.aggregate_targets.find { |t| t.name == 'Runner' }&.user_project
-  unless runner_project.nil?
-    runner_target = runner_project.targets.find { |t| t.name == 'Runner' }
-    unless runner_target.nil?
-      phase = runner_target.shell_script_build_phases.find { |p| p.name == 'Fix SharedPreferences Linker' }
-      if phase.nil?
-        phase = runner_target.new_shell_script_build_phase('Fix SharedPreferences Linker')
-        phase.shell_script = "sed -i '' 's/-l\"shared_preferences\" //g' \"${PROJECT_FILE_PATH}/project.pbxproj\""
-        phase.show_env_vars_in_log = '0'
-        runner_project.save
-        puts "Added fix script build phase to Runner target"
-      end
+    target.build_configurations.each do |config|
+      config.build_settings.delete 'IPHONEOS_DEPLOYMENT_TARGET'
     end
   end
 end

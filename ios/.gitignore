@@ -35,5 +35,12 @@ Icon?
 
 /Flutter/Generated.xcconfig
 
+# Built frameworks
 Frameworks/FIJKPlayer.framework/
 Frameworks/IJKMediaPlayer.framework/
+
+# FFmpeg prebuilt frameworks (large binaries - should be downloaded separately)
+Frameworks/libavcodec.framework/
+Frameworks/libavformat.framework/
+Frameworks/libavutil.framework/
+Frameworks/ffmpegkit.framework/

@@ -32,14 +32,14 @@ public class FJKNativePlayer {
      * Event types matching native PlayerEvent enum
      */
     public static final int EVENT_PREPARED = 0;
-    public static final int EVENT_STARTED = 1;
-    public static final int EVENT_PAUSED = 2;
-    public static final int EVENT_STOPPED = 3;
-    public static final int EVENT_COMPLETED = 4;
-    public static final int EVENT_ERROR = 5;
-    public static final int EVENT_VIDEO_SIZE_CHANGED = 6;
+    public static final int EVENT_VIDEO_SIZE_CHANGED = 1;
+    public static final int EVENT_STARTED = 2;
+    public static final int EVENT_PAUSED = 3;
+    public static final int EVENT_SEEK_COMPLETE = 4;
+    public static final int EVENT_COMPLETED = 5;
+    public static final int EVENT_ERROR = 6;
     public static final int EVENT_BUFFERING = 7;
-    public static final int EVENT_SEEK_COMPLETE = 8;
+    public static final int EVENT_INFO = 8;
     
     /**
      * Constructor

@@ -251,7 +251,27 @@
     if (volume > 1.0f) volume = 1.0f;
     
     _playerNode.volume = volume;
+    
+#if TARGET_OS_IOS
+    // Manage audio session based on volume (iOS only)
+    if (volume == 0.0f) {
+        // When muted, deactivate audio session to allow other apps to play
+        [[AVAudioSession sharedInstance] setActive:NO withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation error:nil];
+        NSLog(@"[AudioRenderer] Volume muted, audio session deactivated");
+    } else if (_isPlaying) {
+        // When unmuted and playing, reactivate audio session
+        NSError *error = nil;
+        [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback error:&error];
+        [[AVAudioSession sharedInstance] setActive:YES error:&error];
+        if (error) {
+            NSLog(@"[AudioRenderer] Failed to activate audio session: %@", error);
+        } else {
+            NSLog(@"[AudioRenderer] Volume set to: %.2f, audio session activated", volume);
+        }
+    }
+#else
     NSLog(@"[AudioRenderer] Volume set to: %.2f", volume);
+#endif
 }
 
 - (BOOL)isPlaying {

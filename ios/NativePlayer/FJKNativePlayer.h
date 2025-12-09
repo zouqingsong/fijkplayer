@@ -145,6 +145,12 @@ typedef void (^FJKPlayerFrameCallback)(void);
 - (void)seekTo:(int64_t)positionMs;
 
 /**
+ * Set playback volume
+ * @param volume Volume level from 0.0 (mute) to 1.0 (max)
+ */
+- (void)setVolume:(float)volume;
+
+/**
  * Cleanup and release resources
  */
 - (void)cleanup;

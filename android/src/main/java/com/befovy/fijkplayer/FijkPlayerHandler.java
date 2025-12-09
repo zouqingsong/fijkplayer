@@ -11,6 +11,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import io.flutter.plugin.common.BinaryMessenger;
+import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
@@ -29,15 +31,17 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
     
     private final Context context;
     private final TextureRegistry textureRegistry;
+    private final BinaryMessenger binaryMessenger;
     private final AtomicInteger playerIdCounter = new AtomicInteger(0);
     
     // Map of player ID to player instance
     private final ConcurrentHashMap<Integer, PlayerInstance> players = new ConcurrentHashMap<>();
     
-    public FijkPlayerHandler(Context context, TextureRegistry textureRegistry) {
+    public FijkPlayerHandler(Context context, TextureRegistry textureRegistry, BinaryMessenger binaryMessenger) {
         this.context = context;
         this.textureRegistry = textureRegistry;
-        Log.i(TAG, "FijkPlayerHandler initialized");
+        this.binaryMessenger = binaryMessenger;
+        Log.i(TAG, "FijkPlayerHandler initialized with per-player channel support");
     }
     
     @Override
@@ -97,6 +101,9 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             case "getVideoHeight":
                 handleGetVideoHeight(call, result);
                 break;
+            case "logLevel":
+                handleLogLevel(call, result);
+                break;
             default:
                 Log.w(TAG, "Unimplemented method: " + call.method);
                 result.notImplemented();
@@ -122,20 +129,278 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             Surface surface = surfaceManager.getSurface();
             player.setSurface(surface);
             
+            // Create per-player MethodChannel (befovy.com/fijkplayer/{id})
+            String methodChannelName = "befovy.com/fijkplayer/" + playerId;
+            MethodChannel methodChannel = new MethodChannel(binaryMessenger, methodChannelName);
+            
+            // Create per-player EventChannel (befovy.com/fijkplayer/event/{id})
+            String eventChannelName = "befovy.com/fijkplayer/event/" + playerId;
+            EventChannel eventChannel = new EventChannel(binaryMessenger, eventChannelName);
+            
             // Store player instance
-            PlayerInstance instance = new PlayerInstance(playerId, player, textureEntry, surfaceManager);
+            PlayerInstance instance = new PlayerInstance(
+                playerId, player, textureEntry, surfaceManager,
+                methodChannel, eventChannel
+            );
             players.put(playerId, instance);
             
-            Log.i(TAG, "Player created: id=" + playerId + ", texture=" + textureId);
+            // Set up per-player method channel handler
+            methodChannel.setMethodCallHandler(new MethodChannel.MethodCallHandler() {
+                @Override
+                public void onMethodCall(@NonNull MethodCall call, @NonNull MethodChannel.Result result) {
+                    handlePerPlayerMethodCall(playerId, call, result);
+                }
+            });
             
-            Map<String, Object> resultMap = new HashMap<>();
-            resultMap.put("playerId", playerId);
-            resultMap.put("textureId", textureId);
-            result.success(resultMap);
+            // Set up per-player event channel
+            eventChannel.setStreamHandler(instance.eventStreamHandler);
+            
+            // Wire native player events to event channel and state transitions
+            player.setEventCallback(new FJKNativePlayer.EventCallback() {
+                @Override
+                public void onNativeEvent(int eventType, int arg1, int arg2) {
+                    instance.handleNativeEvent(eventType, arg1, arg2);
+                }
+            });
+            
+            Log.i(TAG, "Player created: id=" + playerId + ", texture=" + textureId + ", channels=[" + methodChannelName + ", " + eventChannelName + "]");
+            
+            // Return just the playerId for backward compatibility
+            result.success(playerId);
             
         } catch (Exception e) {
             Log.e(TAG, "Failed to create player", e);
             result.error("CREATE_FAILED", e.getMessage(), null);
+        }
+    }
+    
+    /**
+     * Handle method calls on per-player channels
+     */
+    private void handlePerPlayerMethodCall(int playerId, MethodCall call, MethodChannel.Result result) {
+        Log.d(TAG, "Per-player method call: player=" + playerId + ", method=" + call.method);
+        
+        PlayerInstance instance = players.get(playerId);
+        if (instance == null) {
+            result.error("PLAYER_NOT_FOUND", "Player " + playerId + " not found", null);
+            return;
+        }
+        
+        // Handle methods without requiring 'pid' argument since we know the player from the channel
+        switch (call.method) {
+            case "setDataSource": {
+                String url = call.argument("url");
+                if (url == null) {
+                    result.error("INVALID_ARGS", "Missing url", null);
+                    return;
+                }
+                try {
+                    instance.player.setDataSource(url);
+                    Log.i(TAG, "Data source set: player=" + playerId + ", url=" + url);
+                    
+                    // Send state change: idle -> initialized
+                    instance.sendStateChange(PlayerInstance.STATE_INITIALIZED);
+                    
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to set data source", e);
+                    result.error("SET_DATA_SOURCE_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "prepareAsync": {
+                try {
+                    // Send state change: initialized -> asyncPreparing
+                    instance.sendStateChange(PlayerInstance.STATE_ASYNC_PREPARING);
+                    
+                    instance.player.prepareAsync();
+                    Log.i(TAG, "Prepare async: player=" + playerId);
+                    
+                    // Native callback will send prepared state when ready
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to prepare", e);
+                    result.error("PREPARE_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "start": {
+                try {
+                    instance.player.start();
+                    Log.i(TAG, "Start: player=" + playerId);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to start", e);
+                    result.error("START_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "pause": {
+                try {
+                    instance.player.pause();
+                    Log.i(TAG, "Pause: player=" + playerId);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to pause", e);
+                    result.error("PAUSE_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "stop": {
+                try {
+                    instance.player.stop();
+                    Log.i(TAG, "Stop: player=" + playerId);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to stop", e);
+                    result.error("STOP_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "reset": {
+                try {
+                    // NativePlayer doesn't have reset(), so we stop and seek to 0
+                    instance.player.stop();
+                    instance.player.seekTo(0);
+                    Log.i(TAG, "Reset: player=" + playerId);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to reset", e);
+                    result.error("RESET_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "release": {
+                try {
+                    instance.release();
+                    players.remove(playerId);
+                    Log.i(TAG, "Release: player=" + playerId);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to release", e);
+                    result.error("RELEASE_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "seekTo": {
+                Number posMs = call.argument("msec");
+                if (posMs == null) {
+                    result.error("INVALID_ARGS", "Missing msec", null);
+                    return;
+                }
+                try {
+                    instance.player.seekTo(posMs.longValue());
+                    Log.i(TAG, "Seek to: player=" + playerId + ", pos=" + posMs);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to seek", e);
+                    result.error("SEEK_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "getPosition": {
+                try {
+                    long pos = instance.player.getCurrentPosition();
+                    result.success(pos);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to get position", e);
+                    result.error("GET_POSITION_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "getDuration": {
+                try {
+                    long duration = instance.player.getDuration();
+                    result.success(duration);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to get duration", e);
+                    result.error("GET_DURATION_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "setVolume": {
+                Number volume = call.argument("volume");
+                if (volume == null) {
+                    result.error("INVALID_ARGS", "Missing volume", null);
+                    return;
+                }
+                try {
+                    instance.player.setVolume(volume.floatValue());
+                    Log.i(TAG, "Set volume: player=" + playerId + ", volume=" + volume);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to set volume", e);
+                    result.error("SET_VOLUME_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "setSpeed": {
+                Number speed = call.argument("speed");
+                if (speed == null) {
+                    result.error("INVALID_ARGS", "Missing speed", null);
+                    return;
+                }
+                try {
+                    // NativePlayer doesn't support setSpeed yet - return success for compatibility
+                    Log.w(TAG, "setSpeed not yet implemented in NativePlayer: player=" + playerId + ", speed=" + speed);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to set speed", e);
+                    result.error("SET_SPEED_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "setupSurface": {
+                try {
+                    long textureId = instance.textureEntry.id();
+                    Log.i(TAG, "Setup surface: player=" + playerId + ", texture=" + textureId);
+                    result.success(textureId);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to setup surface", e);
+                    result.error("SETUP_SURFACE_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "setLoop": {
+                Number loopCount = call.argument("loop");
+                if (loopCount == null) {
+                    result.error("INVALID_ARGS", "Missing loop", null);
+                    return;
+                }
+                try {
+                    // NativePlayer doesn't support setLooping yet - return success for compatibility
+                    Log.w(TAG, "setLooping not yet implemented in NativePlayer: player=" + playerId + ", loop=" + loopCount);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to set loop", e);
+                    result.error("SET_LOOP_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "getVideoWidth": {
+                try {
+                    int width = instance.player.getVideoWidth();
+                    result.success(width);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to get video width", e);
+                    result.error("GET_WIDTH_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            case "getVideoHeight": {
+                try {
+                    int height = instance.player.getVideoHeight();
+                    result.success(height);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to get video height", e);
+                    result.error("GET_HEIGHT_FAILED", e.getMessage(), null);
+                }
+                break;
+            }
+            default:
+                Log.w(TAG, "Unimplemented per-player method: " + call.method);
+                result.notImplemented();
+                break;
         }
     }
     
@@ -433,7 +698,29 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
     }
     
     private void handleSetupSurface(MethodCall call, MethodChannel.Result result) {
-        // Surface is already set up in init, so this is a no-op for compatibility
+        Integer playerId = call.argument("pid");
+        
+        if (playerId == null) {
+            result.error("INVALID_ARGS", "Missing playerId", null);
+            return;
+        }
+        
+        PlayerInstance instance = players.get(playerId);
+        if (instance == null) {
+            result.error("PLAYER_NOT_FOUND", "Player " + playerId + " not found", null);
+            return;
+        }
+        
+        // Return the texture ID that was created during init
+        long textureId = instance.textureEntry.id();
+        Log.i(TAG, "setupSurface: player=" + playerId + ", textureId=" + textureId);
+        result.success(textureId);
+    }
+    
+    private void handleLogLevel(MethodCall call, MethodChannel.Result result) {
+        // Log level control - just acknowledge for now
+        Integer level = call.argument("level");
+        Log.i(TAG, "Log level set to: " + level);
         result.success(null);
     }
     
@@ -509,24 +796,115 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
     }
     
     /**
-     * Internal class to hold player instance data
+     * Internal class to hold player instance data with per-player channels
      */
     private static class PlayerInstance {
         final int playerId;
         final FJKNativePlayer player;
         final TextureRegistry.SurfaceTextureEntry textureEntry;
         final SurfaceTextureManager surfaceManager;
+        final MethodChannel methodChannel;
+        final EventChannel eventChannel;
+        final EventStreamHandler eventStreamHandler;
+        
+        // FijkState values matching Dart enum
+        private static final int STATE_IDLE = 0;
+        private static final int STATE_INITIALIZED = 1;
+        private static final int STATE_ASYNC_PREPARING = 2;
+        private static final int STATE_PREPARED = 3;
+        private static final int STATE_STARTED = 4;
+        private static final int STATE_PAUSED = 5;
+        private static final int STATE_COMPLETED = 6;
+        private static final int STATE_STOPPED = 7;
+        private static final int STATE_ERROR = 8;
+        private static final int STATE_END = 9;
+        
+        private int currentState = STATE_IDLE;
         
         PlayerInstance(int playerId, FJKNativePlayer player, 
                       TextureRegistry.SurfaceTextureEntry textureEntry,
-                      SurfaceTextureManager surfaceManager) {
+                      SurfaceTextureManager surfaceManager,
+                      MethodChannel methodChannel,
+                      EventChannel eventChannel) {
             this.playerId = playerId;
             this.player = player;
             this.textureEntry = textureEntry;
             this.surfaceManager = surfaceManager;
+            this.methodChannel = methodChannel;
+            this.eventChannel = eventChannel;
+            this.eventStreamHandler = new EventStreamHandler();
+        }
+        
+        void sendEvent(int eventType, int arg1, int arg2) {
+            eventStreamHandler.sendEvent(eventType, arg1, arg2);
+        }
+        
+        void sendStateChange(int newState) {
+            int oldState = currentState;
+            currentState = newState;
+            
+            Map<String, Object> event = new HashMap<>();
+            event.put("event", "state_change");
+            event.put("new", newState);
+            event.put("old", oldState);
+            
+            if (eventStreamHandler.eventSink != null) {
+                eventStreamHandler.eventSink.success(event);
+                Log.d(TAG, "State change: " + oldState + " -> " + newState);
+            }
+        }
+        
+        void handleNativeEvent(int eventType, int arg1, int arg2) {
+            Log.d(TAG, "Native event: type=" + eventType + ", arg1=" + arg1 + ", arg2=" + arg2);
+            
+            // Map native events to FijkState transitions
+            switch (eventType) {
+                case FJKNativePlayer.EVENT_PREPARED:
+                    sendStateChange(STATE_PREPARED);
+                    break;
+                case FJKNativePlayer.EVENT_STARTED:
+                    sendStateChange(STATE_STARTED);
+                    break;
+                case FJKNativePlayer.EVENT_PAUSED:
+                    sendStateChange(STATE_PAUSED);
+                    break;
+                case FJKNativePlayer.EVENT_COMPLETED:
+                    sendStateChange(STATE_COMPLETED);
+                    break;
+                case FJKNativePlayer.EVENT_ERROR:
+                    sendStateChange(STATE_ERROR);
+                    // Also send error event with details
+                    sendEvent(eventType, arg1, arg2);
+                    break;
+                case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED:
+                    // Send video_size event to Flutter
+                    Map<String, Object> sizeEvent = new HashMap<>();
+                    sizeEvent.put("event", "video_size");
+                    sizeEvent.put("width", arg1);
+                    sizeEvent.put("height", arg2);
+                    if (eventStreamHandler.eventSink != null) {
+                        eventStreamHandler.eventSink.success(sizeEvent);
+                    }
+                    break;
+                default:
+                    // Send other events as-is (buffering, seek complete, etc.)
+                    sendEvent(eventType, arg1, arg2);
+                    break;
+            }
         }
         
         void release() {
+            // Clean up event channel
+            if (eventChannel != null) {
+                eventChannel.setStreamHandler(null);
+            }
+            
+            // Clean up method channel
+            if (methodChannel != null) {
+                methodChannel.setMethodCallHandler(null);
+            }
+            
+            // Release player resources
             if (player != null) {
                 player.release();
             }
@@ -535,6 +913,35 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             }
             if (textureEntry != null) {
                 textureEntry.release();
+            }
+        }
+    }
+    
+    /**
+     * Event stream handler for per-player event channels
+     */
+    private static class EventStreamHandler implements EventChannel.StreamHandler {
+        EventChannel.EventSink eventSink;
+        
+        @Override
+        public void onListen(Object arguments, EventChannel.EventSink events) {
+            this.eventSink = events;
+            Log.d(TAG, "EventChannel listener attached");
+        }
+        
+        @Override
+        public void onCancel(Object arguments) {
+            this.eventSink = null;
+            Log.d(TAG, "EventChannel listener cancelled");
+        }
+        
+        void sendEvent(int eventType, int arg1, int arg2) {
+            if (eventSink != null) {
+                Map<String, Object> event = new HashMap<>();
+                event.put("event", eventType);
+                event.put("arg1", arg1);
+                event.put("arg2", arg2);
+                eventSink.success(event);
             }
         }
     }

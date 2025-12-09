@@ -1120,12 +1120,47 @@ static void* decoder_thread_func(void* arg) {
             continue;
         }
         
-        // PULL FRAMES: Add frame timing to match expected frame rate (~24fps = ~42ms per frame)
-        // This prevents decoding/displaying frames too fast
+        // === STEP 1: PUSH packet to decoder ===
+        // Get packet from video queue (blocking)
+        FFPacket* packet = NULL;
+        int ret = packet_queue_get(&player->videoq, &packet, 1);
         
+        if (ret < 0 || !packet) {
+            if (player->stop_requested) {
+                break;
+            }
+            continue;
+        }
+        
+        video_packet_count++;
+        
+        // Wait for keyframe before starting decode
+        if (!keyframe_received) {
+            if (video_packet_count == 1 || packet->is_key_frame) {
+                keyframe_received = true;
+                LOGI("✅ First keyframe: packet#%d, pts=%lld", video_packet_count, (long long)packet->pts);
+            } else {
+                ff_packet_free(packet);
+                continue;
+            }
+        }
+        
+        // Send packet to MediaCodec (non-blocking)
+        ret = mediacodec_decoder_send_packet(player->decoder, packet, 0);
+        ff_packet_free(packet);  // Free after send
+        
+        if (ret < 0) {
+            LOGE("❌ Send packet #%d failed: %d", video_packet_count, ret);
+            continue;
+        }
+        
+        LOGI("📤 Sent packet #%d to MediaCodec, trying to receive frame...", video_packet_count);
+        
+        // === STEP 2: PULL decoded frame ===
         DecodedFrame* frame = NULL;
-        // Non-blocking (0ms) - if buffer ready, grab immediately
         int recv_ret = mediacodec_decoder_receive_frame(player->decoder, &frame, 0);
+        
+        LOGI("📥 Receive result: recv_ret=%d, frame=%p", recv_ret, frame);
         
         if (recv_ret == 0 && frame) {
             total_frames_received++;
@@ -1181,169 +1216,13 @@ static void* decoder_thread_func(void* arg) {
                 usleep(40000);  // Fallback to 40ms if delay is unreasonable
             }
         } else if (recv_ret == -EAGAIN) {
-            // No frame available yet - buffers may be full
-            // Sleep briefly to let Flutter consume frames
-            usleep(5000);  // 5ms - gives Flutter time to update texture
+            // No frame available yet - decoder needs more packets
+            LOGI("⏳ No frame yet after packet #%d (EAGAIN), getting next packet...", video_packet_count);
+            usleep(1000);  // 1ms before getting next packet
         } else if (recv_ret < 0) {
             // Error receiving frame
-            LOGE("❌ Error receiving frame: %d, stopping decoder", recv_ret);
-            break;
+            LOGE("❌ Error receiving frame: %d", recv_ret);
         }
-        
-        // Check if demuxer is still valid
-        if (!player->demuxer) {
-            LOGE("Demuxer is NULL");
-            break;
-        }
-        
-        // Get packet from video queue (blocking)
-        FFPacket* packet = NULL;
-        int ret = packet_queue_get(&player->videoq, &packet, 1);  // Block until packet available
-        
-        if (ret < 0 || !packet) {
-            // Queue aborted or error
-            if (player->stop_requested) {
-                break;
-            }
-            continue;
-        }
-        
-        // Process VIDEO packet
-        video_packet_count++;
-        
-        // Accept first video packet OR wait for keyframe
-        if (!keyframe_received) {
-            if (video_packet_count == 1 || packet->is_key_frame) {
-                keyframe_received = true;
-                LOGI("✅ Starting decode: packet#%d, pts=%lld, size=%d, is_key=%d", 
-                     video_packet_count, (long long)packet->pts, packet->size, packet->is_key_frame);
-            } else {
-                LOGD("⏭️ Skipping non-keyframe: packet#%d, size=%d, pts=%lld", 
-                     video_packet_count, packet->size, (long long)packet->pts);
-                ff_packet_free(packet);
-                continue;
-            }
-        }
-        
-        // Video packet sent to decoder (logging disabled for performance)
-        
-#ifdef USE_SOFTWARE_DECODER
-        // ========== SOFTWARE DECODER PATH ==========
-        // Send packet to software decoder
-        ret = ffmpeg_soft_decoder_send_packet(player->soft_decoder, packet);
-        if (ret < 0) {
-            LOGE("❌ Software decoder send_packet failed: %d", ret);
-            ff_packet_free(packet);
-            continue;
-        }
-        
-        // Try to receive frame immediately
-        SoftDecodedFrame* soft_frame = NULL;
-        ret = ffmpeg_soft_decoder_receive_frame(player->soft_decoder, &soft_frame);
-        
-        if (ret == 0 && soft_frame) {
-            LOGI("✅ SOFTWARE DECODER OUTPUT: %dx%d, pts=%lld, format=%d", 
-                 soft_frame->width, soft_frame->height, 
-                 (long long)soft_frame->pts, soft_frame->format);
-            
-            // Print YUV data sizes
-            LOGI("   Y plane: %p, linesize=%d", soft_frame->data[0], soft_frame->linesize[0]);
-            LOGI("   U plane: %p, linesize=%d", soft_frame->data[1], soft_frame->linesize[1]);
-            LOGI("   V plane: %p, linesize=%d", soft_frame->data[2], soft_frame->linesize[2]);
-            
-            ffmpeg_soft_decoder_free_frame(soft_frame);
-            total_frames_received++;
-        } else if (ret == -EAGAIN) {
-            LOGD("🔧 Software decoder needs more input");
-        } else {
-            LOGW("⚠️ Software decoder receive failed: %d", ret);
-        }
-        
-        ff_packet_free(packet);
-        continue;
-#else
-        // ========== MEDIACODEC DECODER PATH ==========
-        // Try to drain 1 frame before sending - keeps pipeline flowing
-        int pre_drained = 0;
-        for (int i = 0; i < 1; i++) {
-            DecodedFrame* temp_frame = NULL;
-            int recv_ret = mediacodec_decoder_receive_frame(player->decoder, &temp_frame, 0);  // Non-blocking
-            
-            if (recv_ret == 0 && temp_frame) {
-                player->current_position = temp_frame->pts;
-                pre_drained++;
-                total_frames_received++;
-                
-                // Log periodic frame info
-                if (total_frames_received % 240 == 0) {
-                    LOGI("📊 Frame #%d decoded (pre-drain), PTS: %lld ms", 
-                         total_frames_received, 
-                         (long long)(temp_frame->pts / 1000));
-                }
-                
-                if (temp_frame->data[0]) free(temp_frame->data[0]);
-                free(temp_frame);
-            } else {
-                // No more frames available right now - that's OK
-                break;
-            }
-        }
-                 
-        // Now try to send packet with retry
-        int retry_count = 0;
-        const int MAX_RETRIES = 200;  // 2 seconds max
-        
-        while (retry_count < MAX_RETRIES) {
-            ret = mediacodec_decoder_send_packet(player->decoder, packet, 0);  // Non-blocking
-            
-            if (ret == 0) {
-                // Success
-                break;
-            } else if (ret == -11) {  // EAGAIN - still no buffer
-                retry_count++;
-                
-                // Drain frames with BLOCKING wait to prevent deadlock
-                DecodedFrame* temp_frame = NULL;
-                int recv_ret = mediacodec_decoder_receive_frame(player->decoder, &temp_frame, 10000);  // 10ms blocking
-                
-                if (recv_ret == 0 && temp_frame) {
-                    player->current_position = temp_frame->pts;
-                    total_frames_received++;
-                    
-                    // Log periodic frame info
-                    if (total_frames_received % 240 == 0) {
-                        LOGI("📊 Frame #%d decoded (retry path), PTS: %lld ms", 
-                             total_frames_received, 
-                             (long long)(temp_frame->pts / 1000));
-                    }
-                    
-                    if (temp_frame->data[0]) free(temp_frame->data[0]);
-                    free(temp_frame);
-                    // Got a frame, will retry send immediately
-                } else if (recv_ret == -EAGAIN) {
-                    // Still no frame after 10ms timeout - very unusual
-                    LOGW("⚠️ No frame after 10ms wait (retry %d/%d)", retry_count, MAX_RETRIES);
-                    usleep(1000);  // 1ms additional delay
-                } else {
-                    // Error
-                    LOGE("❌ Receive frame error in retry: %d", recv_ret);
-                    break;  // Break retry loop
-                }
-            } else {
-                // Real error
-                LOGE("Failed to send packet: error=%d (size=%d, pts=%lld)", 
-                     ret, packet->size, (long long)packet->pts);
-                break;
-            }
-        }
-        
-        if (retry_count >= MAX_RETRIES) {
-            LOGE("Gave up after %d retries - decoder stalled", MAX_RETRIES);
-        }
-#endif  // USE_SOFTWARE_DECODER
-        
-        // Free packet
-        ff_packet_free(packet);
     }
     
     LOGI("Decoder thread finished");
