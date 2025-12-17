@@ -321,11 +321,12 @@ int mediacodec_decoder_receive_frame(MediaCodecDecoder* decoder, DecodedFrame** 
             // The key is decoder thread pacing (30ms dequeue timeout) controls rate
             // Flutter will call updateTexImage() on its render thread at vsync
             
+            // Disabled verbose logging - uncomment for debugging
             // Log first 10 frames to verify rendering
-            if (decoder->frame_count < 10) {
-                LOGI("🖼️  Releasing frame #%d to surface (render=true): %dx%d, PTS=%lld", 
-                     decoder->frame_count + 1, frame->width, frame->height, frame->pts);
-            }
+            // if (decoder->frame_count < 10) {
+            //     LOGI("🖼️  Releasing frame #%d to surface (render=true): %dx%d, PTS=%lld", 
+            //          decoder->frame_count + 1, frame->width, frame->height, frame->pts);
+            // }
             
             AMediaCodec_releaseOutputBuffer(decoder->codec, buf_idx, true);
         } else {

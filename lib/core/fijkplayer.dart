@@ -221,14 +221,18 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
         FijkState.completed == current;
   }
 
-  /// Start position timer to trigger periodic updates for video rendering
+  /// Start position timer to update position stream and trigger texture updates
   void _startPosTimer() {
     _posTimer?.cancel();
-    // Use 50ms interval for smooth video updates (~20fps for UI refresh)
-    _posTimer = Timer.periodic(Duration(milliseconds: 50), (timer) {
+    // Timer serves two purposes:
+    // 1. Update position stream for monitoring (e.g., frame detection in MicVision)
+    // 2. Call notifyListeners() to trigger FijkView texture rebuilds (critical for smooth playback)
+    // Note: State change listeners won't fire because state hasn't changed (_setValue checks)
+    _posTimer = Timer.periodic(Duration(milliseconds: 200), (timer) {
       if (state == FijkState.started) {
-        // Trigger notifyListeners to force Texture widget rebuild
-        // This allows Flutter to pull new frames from the SurfaceTexture
+        // Update position stream
+        _currentPosController.add(DateTime.now().difference(DateTime(0)));
+        // Trigger FijkView updates for texture rendering
         notifyListeners();
       }
     });

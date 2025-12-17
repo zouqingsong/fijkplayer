@@ -210,18 +210,8 @@
                         }
                         
                         // Convert S16 (-32768 to 32767) to Float32 (-1.0 to 1.0)
-                        // Apply 30x volume boost like Android
-                        int32_t boosted = (int32_t)input * 30;
-                        if (boosted > 32767) boosted = 32767;
-                        else if (boosted < -32768) boosted = -32768;
-                        
-                        // Track boosted amplitude
-                        if (buffer_count <= 3) {
-                            int16_t abs_boosted = abs(boosted);
-                            if (abs_boosted > max_boosted) max_boosted = abs_boosted;
-                        }
-                        
-                        float output = (float)boosted / 32768.0f;
+                        // Normal conversion without boost to match Android natural sound
+                        float output = (float)input / 32768.0f;
                         channelData[ch][i] = output;
                         
                         // Track output amplitude
@@ -233,8 +223,8 @@
                 }
                 
                 if (buffer_count <= 3) {
-                    NSLog(@"[AudioRenderer] 🔊 Buffer #%d: samples=%d, input_max=%d, boosted_max=%d, output_max=%.3f",
-                          buffer_count, (int)samplesToRead, max_input, max_boosted, max_output);
+                    NSLog(@"[AudioRenderer] 🔊 Buffer #%d: samples=%d, input_max=%d, output_max=%.3f",
+                          buffer_count, (int)samplesToRead, max_input, max_output);
                 }
                 
                 free(s16Buffer);

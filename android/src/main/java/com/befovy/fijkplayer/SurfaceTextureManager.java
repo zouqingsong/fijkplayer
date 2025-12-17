@@ -43,9 +43,10 @@ public class SurfaceTextureManager {
                 long interval = (lastFrameTime > 0) ? (now - lastFrameTime) : 0;
                 lastFrameTime = now;
                 
-                if (count <= 30 || count % 60 == 0) {
-                    Log.i(TAG, "📺 onFrameAvailable called! Frame #" + count + " (interval=" + interval + "ms, thread=" + Thread.currentThread().getName() + ")");
-                }
+                // Disabled verbose logging - uncomment for debugging
+                // if (count <= 30 || count % 60 == 0) {
+                //     Log.i(TAG, "📺 onFrameAvailable called! Frame #" + count + " (interval=" + interval + "ms, thread=" + Thread.currentThread().getName() + ")");
+                // }
                 
                 // DO NOT call updateTexImage() here - causes crash!
                 // Flutter's engine automatically calls it on the raster thread (which has GL context)

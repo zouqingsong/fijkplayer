@@ -123,7 +123,7 @@ static const int end = 9;
                  binaryMessenger:[registrar messenger]];
         [_eventChannel setStreamHandler:self];
         
-        NSLog(@"[FijkPlayer] Initialized with native FFmpeg backend (player %d)", _pid);
+        // NSLog(@"[FijkPlayer] Initialized with native FFmpeg backend (player %d)", _pid);
     }
     return self;
 }
@@ -173,7 +173,7 @@ static const int end = 9;
     [_eventChannel setStreamHandler:nil];
     _eventChannel = nil;
     
-    NSLog(@"[FijkPlayer] Shutdown complete (player %d)", _pid);
+    // NSLog(@"[FijkPlayer] Shutdown complete (player %d)", _pid);
 }
 
 // MARK: - FlutterTexture Protocol
@@ -189,7 +189,7 @@ static const int end = 9;
         size_t height = CVPixelBufferGetHeight(pixelBuffer);
         static int logCount = 0;
         if (logCount++ % 120 == 0) {
-            NSLog(@"[FijkPlayer] 📐 Texture dimensions: %zux%zu (video: %dx%d)", width, height, _width, _height);
+            // NSLog(@"[FijkPlayer] 📐 Texture dimensions: %zux%zu (video: %dx%d)", width, height, _width, _height);
         }
     }
     
@@ -249,15 +249,18 @@ static const int end = 9;
 }
 
 - (void)notifyState:(int)newState {
-    NSLog(@"[FijkPlayer] notifyState called: %d -> %d, eventSink=%@", _state, newState, _eventSink);
+    // Only send event if state actually changed
+    if (_state == newState) {
+        return;
+    }
+    
+    int oldState = _state;
     NSDictionary *event = @{
         @"event": @"state_change",
         @"new": @(newState),
-        @"old": @(_state)
+        @"old": @(oldState)
     };
-    NSLog(@"[FijkPlayer] Sending state_change event: %@", event);
     [_eventSink success:event];
-    NSLog(@"[FijkPlayer] State event sent");
 }
 
 - (void)notifyError:(int)code extra:(id)extra {
@@ -276,7 +279,6 @@ static const int end = 9;
         @"height": @(_height)
     };
     [_eventSink success:event];
-    NSLog(@"[FijkPlayer] Sent size_changed event: %dx%d", _width, _height);
 }
 
 - (void)notifySeekComplete {
@@ -296,7 +298,6 @@ static const int end = 9;
 - (FlutterError *_Nullable)onListenWithArguments:(id _Nullable)arguments
                                        eventSink:(nonnull FlutterEventSink)events {
     [_eventSink setDelegate:events];
-    NSLog(@"[FijkPlayer] EventChannel listener attached");
     
     // Send cached video size immediately if available
     if (_width > 0 && _height > 0) {
@@ -306,7 +307,6 @@ static const int end = 9;
             @"height": @(_height)
         };
         [_eventSink success:sizeEvent];
-        NSLog(@"[FijkPlayer] Sent cached video size: %dx%d", _width, _height);
     }
     
     return nil;
@@ -315,17 +315,15 @@ static const int end = 9;
 // MARK: - Method Channel Handler
 
 - (void)handleMethodCall:(FlutterMethodCall *)call result:(FlutterResult)result {
-    NSLog(@"[FijkPlayer] ========== handleMethodCall: %@ ==========", call.method);
     if ([@"setDataSource" isEqualToString:call.method]) {
         NSString *url = call.arguments[@"url"];
-        NSLog(@"[FijkPlayer] setDataSource called with URL: %@, current state: %d", url, _state);
         int ret = [_nativePlayer setDataSource:url];
-        NSLog(@"[FijkPlayer] setDataSource returned: %d", ret);
+        // NSLog(@"[FijkPlayer] setDataSource returned: %d", ret);
         if (ret == 0) {
-            NSLog(@"[FijkPlayer] State transition: %d -> %d (initialized), notifying...", _state, initialized);
+            // NSLog(@"[FijkPlayer] State transition: %d -> %d (initialized), notifying...", _state, initialized);
             [self notifyState:initialized];  // This reads _state as "old" before we change it
             _state = initialized;
-            NSLog(@"[FijkPlayer] State updated to: %d", _state);
+            // NSLog(@"[FijkPlayer] State updated to: %d", _state);
         }
         // Return result AFTER state change event is sent
         result(@(ret));
@@ -334,18 +332,18 @@ static const int end = 9;
         // Register texture
         if (_vid < 0) {
             _vid = [_textureRegistry registerTexture:self];
-            NSLog(@"[FijkPlayer] ✅ Texture registered with ID: %lld", (long long)_vid);
+            // NSLog(@"[FijkPlayer] ✅ Texture registered with ID: %lld", (long long)_vid);
         }
-        NSLog(@"[FijkPlayer] prepareAsync called, registering texture and preparing");
+        // NSLog(@"[FijkPlayer] prepareAsync called, registering texture and preparing");
         [self notifyState:asyncPreparing];
         _state = asyncPreparing;
         [_nativePlayer prepareAsync];
         result(@{@"id": @(_vid)});
         
     } else if ([@"start" isEqualToString:call.method]) {
-        NSLog(@"[FijkPlayer] start called, current state: %d", _state);
+        // NSLog(@"[FijkPlayer] start called, current state: %d", _state);
         int ret = [_nativePlayer start];
-        NSLog(@"[FijkPlayer] start returned: %d", ret);
+        // NSLog(@"[FijkPlayer] start returned: %d", ret);
         // State change event will be sent by handleNativePlayerEvent when native player starts
         result(@(ret));
         
@@ -360,11 +358,11 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"reset" isEqualToString:call.method]) {
-        NSLog(@"[FijkPlayer] reset called, current state: %d", _state);
+        // NSLog(@"[FijkPlayer] reset called, current state: %d", _state);
         [_nativePlayer cleanup];  // Fully reset to idle state
         [self notifyState:idle];
         _state = idle;
-        NSLog(@"[FijkPlayer] State reset to idle");
+        // NSLog(@"[FijkPlayer] State reset to idle");
         result(@(0));
         
     } else if ([@"getCurrentPosition" isEqualToString:call.method]) {
@@ -398,7 +396,7 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"setupSurface" isEqualToString:call.method]) {
-        NSLog(@"[FijkPlayer] setupSurface called, returning texture ID: %lld", (long long)_vid);
+        // NSLog(@"[FijkPlayer] setupSurface called, returning texture ID: %lld", (long long)_vid);
         // Return the texture ID that was registered in prepareAsync
         result(@(_vid));
         

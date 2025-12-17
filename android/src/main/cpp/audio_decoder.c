@@ -1,3 +1,4 @@
+#define DISABLE_VERBOSE_LOGS 1
 /*
  * Audio Decoder Implementation
  * 
@@ -197,22 +198,24 @@ int audio_decoder_send_packet(AudioDecoder* decoder, FFPacket* packet, int64_t t
     
     if (decoder->backend == AUDIO_DECODER_MEDIACODEC) {
         // Debug: Log first few packets to understand what we're getting
-        static int send_count = 0;
-        send_count++;
-        if (send_count <= 5) {
-            LOGI("🎵 Send packet #%d: codec=%d, size=%d, FFmpeg_AAC=%d", 
-                 send_count, decoder->config.codec, packet->size, FF_AUDIO_CODEC_AAC);
-        }
+        // Disabled verbose logging - uncomment for debugging
+        // static int send_count = 0;
+        // send_count++;
+        // if (send_count <= 5) {
+        //     LOGI("🎵 Send packet #%d: codec=%d, size=%d, FFmpeg_AAC=%d", 
+        //          send_count, decoder->config.codec, packet->size, FF_AUDIO_CODEC_AAC);
+        // }
         
         // Filter out AAC AudioSpecificConfig packets (typically 2-9 bytes)
         // These are configuration packets that should only be in extradata/csd-0, not sent as input
         if (decoder->config.codec == FF_AUDIO_CODEC_AAC && packet->size <= 10) {
-            static int filtered_count = 0;
-            filtered_count++;
-            if (filtered_count <= 5) {
-                LOGI("🎵 Filtered AAC config packet #%d (size=%d bytes) - not sending to decoder", 
-                     filtered_count, packet->size);
-            }
+            // Disabled verbose logging - uncomment for debugging
+            // static int filtered_count = 0;
+            // filtered_count++;
+            // if (filtered_count <= 5) {
+            //     LOGI("🎵 Filtered AAC config packet #%d (size=%d bytes) - not sending to decoder", 
+            //          filtered_count, packet->size);
+            // }
             return 0; // Success, but packet filtered out
         }
         ssize_t input_index = AMediaCodec_dequeueInputBuffer(decoder->media_codec, timeout_us);
@@ -251,9 +254,10 @@ int audio_decoder_send_packet(AudioDecoder* decoder, FFPacket* packet, int64_t t
         // Log every 100 packets
         static int packet_count = 0;
         packet_count++;
-        if (packet_count % 100 == 0) {
-            LOGI("🎵 Sent %d audio packets to MediaCodec", packet_count);
-        }
+        // Disabled verbose logging - uncomment for debugging
+        // if (packet_count % 100 == 0) {
+        //     LOGI("🎵 Sent %d audio packets to MediaCodec", packet_count);
+        // }
     }
     
     return 0;
@@ -276,10 +280,11 @@ int audio_decoder_receive_audio(AudioDecoder* decoder, DecodedAudio* decoded_aud
         // Debug logging for receive attempts
         static int receive_attempt = 0;
         receive_attempt++;
-        if (receive_attempt <= 20 || receive_attempt % 100 == 0) {
-            LOGI("🎧 Receive attempt #%d: output_index=%zd, timeout=%lld us", 
-                 receive_attempt, output_index, (long long)timeout_us);
-        }
+        // Disabled verbose logging - uncomment for debugging
+        // if (receive_attempt <= 20 || receive_attempt % 100 == 0) {
+        //     LOGI("🎧 Receive attempt #%d: output_index=%zd, timeout=%lld us", 
+        //          receive_attempt, output_index, (long long)timeout_us);
+        // }
         
         if (output_index == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
             return -EAGAIN;
@@ -291,7 +296,8 @@ int audio_decoder_receive_audio(AudioDecoder* decoder, DecodedAudio* decoded_aud
             AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_SAMPLE_RATE, &sample_rate);
             AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &channels);
             AMediaFormat_delete(format);
-            LOGI("🎵 Audio output format changed: %d Hz, %d ch", sample_rate, channels);
+            // Disabled verbose logging - uncomment for debugging
+            // LOGI("🎵 Audio output format changed: %d Hz, %d ch", sample_rate, channels);
             
             // Update decoder config with actual output format
             decoder->config.sample_rate = sample_rate;

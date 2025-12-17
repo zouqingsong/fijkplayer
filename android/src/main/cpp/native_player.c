@@ -1,3 +1,4 @@
+#define DISABLE_VERBOSE_LOGS 1
 /**
  * Native Player Implementation
  * Integrates FFmpeg demuxer, MediaCodec decoder, frame queue, and GL renderer
@@ -34,7 +35,11 @@
 #define LOG_TAG "NativePlayer"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#ifdef DISABLE_VERBOSE_LOGS
+#define LOGI(...) // __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#else
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#endif
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 
 // Player structure

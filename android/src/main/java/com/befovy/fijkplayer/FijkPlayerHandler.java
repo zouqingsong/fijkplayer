@@ -42,14 +42,14 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         this.context = context;
         this.textureRegistry = textureRegistry;
         this.binaryMessenger = binaryMessenger;
-        Log.i(TAG,
-              "FijkPlayerHandler initialized with per-player channel support");
+        // Log.i(TAG,
+        //       "FijkPlayerHandler initialized with per-player channel support");
     }
 
     @Override
     public void onMethodCall(@NonNull MethodCall call,
                              @NonNull MethodChannel.Result result) {
-        Log.d(TAG, "Method call: " + call.method);
+        // Log. "Method call: " + call.method);
 
         switch (call.method) {
         case "init":
@@ -190,8 +190,8 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
      */
     private void handlePerPlayerMethodCall(int playerId, MethodCall call,
                                            MethodChannel.Result result) {
-        Log.d(TAG, "Per-player method call: player=" + playerId +
-                       ", method=" + call.method);
+        // Log.d(TAG, "Per-player method call: player=" + playerId +
+        //            ", method=" + call.method);
 
         PlayerInstance instance = players.get(playerId);
         if (instance == null) {
@@ -211,8 +211,6 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             }
             try {
                 instance.player.setDataSource(url);
-                Log.i(TAG,
-                      "Data source set: player=" + playerId + ", url=" + url);
 
                 // Send state change: idle -> initialized
                 instance.sendStateChange(PlayerInstance.STATE_INITIALIZED);
@@ -759,15 +757,15 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
 
         // Return the texture ID that was created during init
         long textureId = instance.textureEntry.id();
-        Log.i(TAG,
-              "setupSurface: player=" + playerId + ", textureId=" + textureId);
+        // Log.i(TAG,
+        //       "setupSurface: player=" + playerId + ", textureId=" + textureId);
         result.success(textureId);
     }
 
     private void handleLogLevel(MethodCall call, MethodChannel.Result result) {
         // Log level control - just acknowledge for now
         Integer level = call.argument("level");
-        Log.i(TAG, "Log level set to: " + level);
+        // Log. "Log level set to: " + level);
         result.success(null);
     }
 
@@ -894,6 +892,13 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
 
         void sendStateChange(int newState) {
             int oldState = currentState;
+            
+            // Only send event if state actually changed
+            if (oldState == newState) {
+                Log.d(TAG, "Skipping duplicate state event: state=" + newState);
+                return;
+            }
+            
             currentState = newState;
 
             Map<String, Object> event = new HashMap<>();
@@ -903,14 +908,11 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
 
             if (eventSink != null) {
                 eventSink.success(event);
-                Log.d(TAG, "State change: " + oldState + " -> " + newState);
+                Log.d(TAG, "State changed: " + oldState + " -> " + newState);
             }
         }
 
         void handleNativeEvent(int eventType, int arg1, int arg2) {
-            Log.d(TAG, "Native event: type=" + eventType + ", arg1=" + arg1 +
-                           ", arg2=" + arg2);
-
             // Map native events to FijkState transitions
             switch (eventType) {
             case FJKNativePlayer.EVENT_PREPARED:
@@ -948,9 +950,6 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                 sizeEvent.put("height", arg2);
                 if (eventSink != null) {
                     eventSink.success(sizeEvent);
-                    Log.i(TAG, "Sent size_changed event: " + arg1 + "x" + arg2);
-                } else {
-                    Log.i(TAG, "Cached video size (no listener yet): " + arg1 + "x" + arg2);
                 }
                 break;
             default:
@@ -1003,7 +1002,6 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         @Override
         public void onListen(Object arguments, EventChannel.EventSink events) {
             instance.eventSink = events;
-            Log.i(TAG, "EventChannel listener attached for player " + instance.playerId);
             
             // Send cached video size immediately if available
             if (instance.videoWidth > 0 && instance.videoHeight > 0) {
@@ -1012,14 +1010,12 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                 args.put("width", instance.videoWidth);
                 args.put("height", instance.videoHeight);
                 events.success(args);
-                Log.i(TAG, "Sent cached video size: " + instance.videoWidth + "x" + instance.videoHeight);
             }
         }
 
         @Override
         public void onCancel(Object arguments) {
             instance.eventSink = null;
-            Log.i(TAG, "EventChannel listener cancelled for player " + instance.playerId);
         }
     }
 }

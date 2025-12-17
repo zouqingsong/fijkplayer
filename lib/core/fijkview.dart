@@ -576,7 +576,7 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
     if (size != null && value.prepared) {
       _vWidth = size.width;
       _vHeight = size.height;
-      print('🎬 FijkView build: Video size updated to ${_vWidth}x${_vHeight} from FijkValue');
+      // print('🎬 FijkView build: Video size updated to ${_vWidth}x${_vHeight} from FijkValue');
     }
     _videoRender = value.videoRenderStart;
 
