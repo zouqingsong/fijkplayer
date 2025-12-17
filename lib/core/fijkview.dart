@@ -222,6 +222,11 @@ class _FijkViewState extends State<FijkView> {
       _setupTexture();
     }
 
+    // Notify inner widget to refresh when playing (for Texture updates)
+    if (mounted && _textureId >= 0 && value.state == FijkState.started) {
+      paramNotifier.value = paramNotifier.value + 1;
+    }
+
     if (widget.fs) {
       if (value.fullScreen && !_fullScreen) {
         _fullScreen = true;
@@ -370,6 +375,7 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
   bool _vFullScreen = false;
   int _degree = 0;
   bool _videoRender = false;
+  int _refreshCount = 0; // Counter to force Texture widget rebuild
 
   @override
   void initState() {
@@ -377,8 +383,17 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
     _player = fView.player;
     _fijkValueListener();
     fView.player.addListener(_fijkValueListener);
-    if (widget.fullScreen) {
-      widget.fijkViewState.paramNotifier.addListener(_voidValueListener);
+    widget.fijkViewState.paramNotifier.addListener(_voidValueListener);
+    
+    // Force initial refresh if already playing when widget mounts
+    if (_player.state == FijkState.started) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          setState(() {
+            _refreshCount = 1;
+          });
+        }
+      });
     }
   }
 
@@ -412,6 +427,13 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
       height = size.height;
     }
 
+    // Always increment refresh counter when playing to force Texture widget rebuilds
+    // This ensures Flutter calls updateTexImage() to consume frames from SurfaceTexture
+    bool needsRefresh = (value.state == FijkState.started && textureId >= 0);
+    
+    // Check if texture just became available while playing
+    bool textureJustReady = (textureId >= 0 && _textureId < 0 && value.state == FijkState.started);
+
     if (width != _vWidth ||
         height != _vHeight ||
         fullScreen != _vFullScreen ||
@@ -421,8 +443,25 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
         textureId != _textureId ||
         _videoRender != videoRender) {
       if (mounted) {
-        setState(() {});
+        setState(() {
+          _vWidth = width;
+          _vHeight = height;
+          _vFullScreen = fullScreen;
+          _panelBuilder = panelBuilder;
+          _color = color;
+          _fit = fit;
+          _textureId = textureId;
+          _videoRender = videoRender;
+        });
       }
+    }
+    
+    // CRITICAL: Always call setState when playing to force Texture rebuilds
+    // Also trigger when texture becomes ready while already playing
+    if ((needsRefresh || textureJustReady) && mounted) {
+      setState(() {
+        _refreshCount++;
+      });
     }
   }
 
@@ -500,8 +539,15 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
   }
 
   Widget buildTexture() {
-    Widget tex = _textureId > 0 ? Texture(textureId: _textureId) : Container();
-    if (_degree != 0 && _textureId > 0) {
+    // Add ValueKey with refresh count to force Texture widget rebuild
+    // This ensures Flutter calls updateTexImage() to consume frames from SurfaceTexture
+    Widget tex = _textureId >= 0 
+      ? Texture(
+          key: ValueKey<String>('texture_${_textureId}_$_refreshCount'),
+          textureId: _textureId,
+        ) 
+      : Container();
+    if (_degree != 0 && _textureId >= 0) {
       return RotatedBox(
         quarterTurns: _degree ~/ 90,
         child: tex,
@@ -530,6 +576,7 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
     if (size != null && value.prepared) {
       _vWidth = size.width;
       _vHeight = size.height;
+      // print('🎬 FijkView build: Video size updated to ${_vWidth}x${_vHeight} from FijkValue');
     }
     _videoRender = value.videoRenderStart;
 

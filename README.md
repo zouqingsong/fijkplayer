@@ -1,25 +1,24 @@
-# fijkplayer (Video player plugin for Flutter) Flutter 媒体播放器
+# fijkplayer - Flutter Media Player Plugin
 
-✨ **[手把手带你写 Flutter 系统音量插件](https://www.yuque.com/befovy/share/flutter_volume)**  ✨  **[Flutter 多版本管理工具 fvm](https://github.com/befovy/fvm)** ✨
-
-[![HitCount](https://hits.dwyl.com/befovy/fijkplayer.svg)](https://hits.dwyl.com/befovy/fijkplayer) &nbsp; &nbsp;
 [![pub package](https://img.shields.io/pub/v/fijkplayer.svg)](https://pub.dartlang.org/packages/fijkplayer) &nbsp; &nbsp;
-[![Action Status](https://github.com/befovy/fijkplayer/workflows/Flutter/badge.svg?branch=master)](https://github.com/befovy/fijkplayer/actions) &nbsp; &nbsp;
+[![GitHub](https://img.shields.io/github/stars/zouqingsong/fijkplayer?style=social)](https://github.com/zouqingsong/fijkplayer) &nbsp; &nbsp;
 
+A high-performance Flutter media player plugin with native FFmpeg-based implementation for iOS and Android.
 
-A Flutter media player plugin for iOS and android based on [ijkplayer](https://github.com/befovy/ijkplayer)
+**✨ Latest Updates (v0.11.0+):** 
+- ✅ Native FFmpeg 6.1 player with hardware acceleration
+- ✅ MediaCodec (Android) / VideoToolbox (iOS) video decoding
+- ✅ ~15MB smaller binary size vs ijkplayer
+- ✅ Fixed Android video display (texture ID 0 handling)
+- ✅ Native recording support (Android)
 
-您的支持是我们开发的动力。 欢迎Star，欢迎PR~。
-[Feedback welcome](https://github.com/befovy/fijkplayer/issues) and
-[Pull Requests](https://github.com/befovy/fijkplayer/pulls) are most welcome!
+[Feedback welcome](https://github.com/zouqingsong/fijkplayer/issues) and
+[Pull Requests](https://github.com/zouqingsong/fijkplayer/pulls) are most welcome!
 
 ## Documentation 文档
 
-* Development Documentation https://fijkplayer.befovy.com/docs/en/ quick start、guide、and concepts about fijkplayer 
-* 开发文档  https://fijkplayer.befovy.com/docs/zh/ 包含快速开始、使用指南、fijkplayer 中的概念理解
 * dart api https://pub.dev/documentation/fijkplayer/ detail API and argument explaination
-* Release Notes https://github.com/befovy/fijkplayer/releases and [CHANGELOG.md](./CHANGELOG.md)
-* FAQ https://fijkplayer.befovy.com/docs/zh/faq.html
+* Release Notes https://github.com/zouqingsong/fijkplayer/releases and [CHANGELOG.md](./CHANGELOG.md)
 
 ## Installation 安装
 
@@ -94,12 +93,97 @@ class _VideoScreenState extends State<VideoScreen> {
 
 Thanks goes to [these wonderful people](./CONTRIBUTORS.md) ([emoji key](https://allcontributors.org/docs/en/emoji-key))
 
-This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome
+This project follows the [all-contributors](https://github.com/all-contributors/all-contributors) specification. Contributions of any kind welcome!
 
-## iOS Warning 警告
+## Architecture 架构
 
-Warning: The fijkplayer video player plugin is not functional on iOS simulators. An iOS device must be used during development/testing. For more details, please refer to this [issue](https://github.com/flutter/flutter/issues/14647).
+### Native Player Architecture (v0.11.0+)
 
+```
+Flutter App (Dart)
+    ↓ MethodChannel
+    ├─ Android: NativePlayer (FFmpeg 6.1 + MediaCodec)
+    │   ├─ FFmpeg demuxing (RTSP/HTTP/HTTPS/HLS)
+    │   ├─ Hardware H.264 decoding (MediaCodec)
+    │   ├─ Software AAC decoding (FFmpeg)
+    │   ├─ Android AudioTrack playback
+    │   ├─ Per-player channel architecture
+    │   └─ Native recording with FFmpeg muxing
+    │
+    └─ iOS: FJKNativePlayer (FFmpeg 6.1 + VideoToolbox)
+        ├─ FFmpeg demuxing (RTSP/HTTP/HTTPS/HLS)
+        ├─ Hardware H.264 decoding (VideoToolbox)
+        ├─ Hardware AAC decoding (AudioToolbox)
+        ├─ AVAudioEngine playback with precise timing
+        └─ CVPixelBuffer rendering with automatic vsync
+
+Key Components:
+• Audio/Video synchronization using ijkplayer's proven algorithm
+• Frame-accurate A/V sync with drift correction
+• Texture-based video rendering (Flutter Texture widget)
+• Per-player isolated channels (supports multiple simultaneous players)
+```
+
+### Supported Formats
+- **Video**: H.264 (AVC), HEVC/H.265 (experimental)
+- **Audio**: AAC (LC/HE-AAC), MP3
+- **Protocols**: RTSP, RTP, HTTP, HTTPS, TLS, file://
+- **Containers**: MP4, FLV, TS, M3U8 (HLS), MOV
+
+### Platform Support
+
+**iOS**
+- ✅ Physical devices (arm64)
+- ✅ iOS Simulator (x86_64, arm64)
+- ✅ Hardware acceleration (VideoToolbox + AudioToolbox)
+- ✅ HTTPS/TLS support (SecureTransport)
+
+**Android**
+- ✅ Physical devices (arm64-v8a, armeabi-v7a)
+- ✅ Android Emulator
+- ✅ Hardware acceleration (MediaCodec)
+- ✅ HTTPS/TLS support (OpenSSL 3.0)
+- ✅ Native recording (FFmpeg muxing)
+
+## Building FFmpeg
+
+See [scripts/README.md](./scripts/README.md) for detailed instructions on building FFmpeg for iOS and Android.
+
+Quick build commands:
+```bash
+# iOS (requires Xcode)
+./scripts/build-ios.sh
+
+# Android (requires Android NDK)
+./scripts/build-android.sh
+```
+
+## Next Steps / Roadmap
+
+### Short Term
+- [ ] Fix video aspect ratio (currently displays as square)
+- [ ] Improve texture scaling and fit modes
+- [ ] Add configuration options for decoder selection
+- [ ] Enhanced error handling and reconnection logic
+
+### Medium Term
+- [ ] iOS recording support (FFmpeg-based like Android)
+- [ ] HEVC/H.265 hardware decoding optimization
+- [ ] Multiple audio track support
+- [ ] Subtitle/caption support
+- [ ] Adaptive bitrate streaming (HLS variants)
+
+### Long Term
+- [ ] Live streaming with ultra-low latency
+- [ ] 4K/8K video support optimization
+- [ ] Hardware encoding for recording
+- [ ] WebRTC integration
+- [ ] Cross-platform desktop support (macOS/Windows/Linux)
+
+## Known Issues
+
+1. **Video Aspect Ratio**: Video currently renders as square instead of preserving HD aspect ratio - fix in progress
+2. **Texture Scaling**: Default fit mode may need adjustment for different video dimensions
 
 ## Join Ding Talk Group 加入钉钉群
 

@@ -20,16 +20,15 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-#import <Foundation/Foundation.h>
-#import <IJKMediaPlayer/IJKMediaPlayer.h>
-#import <AVFoundation/AVFoundation.h>
+// MIT License - FijkPlayer with Native FFmpeg Backend
 
+#import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
 #import <Flutter/FlutterPlugin.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface FijkPlayer : NSObject <FlutterStreamHandler, IJKMPEventHandler,
-                                  FlutterTexture, IJKCVPBViewProtocol>
+@interface FijkPlayer : NSObject <FlutterStreamHandler, FlutterTexture>
 
 @property(atomic, readonly) NSNumber *playerId;
 

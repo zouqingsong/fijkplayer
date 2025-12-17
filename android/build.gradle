@@ -1,5 +1,5 @@
-group 'com.befovy.fijkplayer'
-version '0.11.0'
+group = 'com.befovy.fijkplayer'
+version = '0.11.0'
 
 buildscript {
     ext.kotlin_version = "1.9.24"
@@ -25,13 +25,9 @@ apply plugin: 'com.android.library'
 apply plugin: "kotlin-android"
 
 android {
-    namespace 'com.befovy.fijkplayer'
+    namespace = 'com.befovy.fijkplayer'
     packagingOptions {
-    // Exclude ijkffmpeg from CMake build output since it comes from fijkplayer-full AAR
-    exclude 'lib/armeabi-v7a/libijkffmpeg.so'
-    exclude 'lib/arm64-v8a/libijkffmpeg.so'
-    exclude 'lib/x86/libijkffmpeg.so'
-    exclude 'lib/x86_64/libijkffmpeg.so'
+        // No pickFirst for libc++_shared.so - use the version with 16KB page size support
     }
 
     compileSdk = 34
@@ -40,17 +36,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-
+   
     defaultConfig {
         minSdk = 24
+        
+        // Support both 64-bit (required by Google Play) and 32-bit ARM
         ndk { 
             abiFilters 'arm64-v8a', 'armeabi-v7a'
             // Support 16KB page sizes for Android 15+
             // https://developer.android.com/guide/practices/page-sizes
             debugSymbolLevel 'SYMBOL_TABLE'
         }
-        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
         
+        // CMake configuration for native builds
         externalNativeBuild {
             cmake {
                 cppFlags ""
@@ -58,12 +56,15 @@ android {
                           "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
             }
         }
+        
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
     
+    // Link to CMakeLists.txt
     externalNativeBuild {
         cmake {
-            path "src/main/cpp/CMakeLists.txt"
-            version "3.22.1"
+            path file('src/main/cpp/CMakeLists.txt')
+            version '3.22.1'
         }
     }
     lintOptions {
@@ -88,12 +89,7 @@ android {
     }
 }
 
-
 dependencies {
-
-    // implementation(name: 'fijkplayer-full-release', ext: 'aar')
-
-    // fijkplayer-full include the java lib and native shared libs for armv5 armv7 arm64
-    implementation 'com.befovy.fijkplayer:fijkplayer-full:0.7.16'
+    // AndroidX dependencies
     implementation 'androidx.annotation:annotation:1.2.0'
 }

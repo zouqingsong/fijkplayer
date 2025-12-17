@@ -4,6 +4,9 @@ import 'app_bar.dart';
 import 'input_url.dart';
 import 'listview.dart';
 import 'local_path.dart';
+import 'native_player_test_page.dart';
+import 'ffmpeg_architecture_test_page.dart';
+import 'simple_video_test.dart';
 import 'recent_list.dart';
 
 class HomeItem extends StatelessWidget {
@@ -79,6 +82,27 @@ class HomeScreen extends StatelessWidget {
                     MaterialPageRoute(builder: (context) => ListScreen()));
               },
               text: "List View",
+            ),
+            HomeItem(
+              onPressed: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (context) => NativePlayerTestPage()));
+              },
+              text: "🎯 Native Player Test",
+            ),
+            HomeItem(
+              onPressed: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (context) => FFmpegArchitectureTestPage()));
+              },
+              text: "🚀 FFmpeg Architecture Test",
+            ),
+            HomeItem(
+              onPressed: () {
+                Navigator.push(context,
+                    MaterialPageRoute(builder: (context) => SimpleVideoTest()));
+              },
+              text: "📹 FijkView Compatibility Test",
             )
             /*
             Container(

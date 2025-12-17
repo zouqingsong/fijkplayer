@@ -20,5 +20,7 @@ doc/api/
 org.eclipse.buildship.core.prefs
 /android/.cxx
 /ios/FFmpeg
-/ffmpeg
 /android/src/main/cpp/ffmpeg
+/ffmpeg/
+*.bak
+/android/src/main/jniLibs/

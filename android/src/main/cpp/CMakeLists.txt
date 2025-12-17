@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.6)
 
-project(fijkplayer_ffmpeg_recorder)
+project(fijkplayer)
 
 # Set C standard
 set(CMAKE_C_STANDARD 99)
+set(CMAKE_CXX_STANDARD 11)
 
 # Support 16KB page sizes for Android 15+
 # https://developer.android.com/guide/practices/page-sizes
@@ -12,68 +13,231 @@ if(ANDROID)
     set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -Wl,-z,max-page-size=16384")
 endif()
 
-# Add FFmpeg recorder source
+# Get the directory where CMakeLists.txt is located
+set(PROJECT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Option to enable software decoder for diagnostics
+option(USE_SOFTWARE_DECODER "Use FFmpeg software decoder instead of MediaCodec" OFF)
+
+if(USE_SOFTWARE_DECODER)
+    message(STATUS "Using FFmpeg software decoder (diagnostic mode)")
+    add_definitions(-DUSE_SOFTWARE_DECODER)
+endif()
+
+# FFmpeg headers location (our custom build)
+set(FFMPEG_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/ffmpeg/include")
+
+# FFmpeg libraries location (pre-built .so files in jniLibs)
+set(FFMPEG_LIB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")
+
+message(STATUS "Building for ABI: ${ANDROID_ABI}")
+message(STATUS "FFmpeg headers: ${FFMPEG_INCLUDE_DIR}")
+message(STATUS "FFmpeg libraries: ${FFMPEG_LIB_DIR}")
+
+# Check if FFmpeg headers exist
+if(NOT EXISTS "${FFMPEG_INCLUDE_DIR}")
+    message(FATAL_ERROR "FFmpeg headers not found at: ${FFMPEG_INCLUDE_DIR}. Please run ffmpeg/build-android.sh first.")
+endif()
+
+# Add FFmpeg demuxer library
+add_library(fijkplayer_demuxer SHARED
+    ffmpeg_demuxer.c
+    async_io_protocol.c
+)
+
+# Add packet queue library (ijkplayer architecture)
+add_library(fijkplayer_packet_queue SHARED
+    packet_queue.c
+)
+
+# Add MediaCodec decoder library
+add_library(fijkplayer_decoder SHARED
+    mediacodec_decoder.c
+)
+
+# Add audio decoder library
+add_library(fijkplayer_audio_decoder SHARED
+    audio_decoder.c
+)
+
+# Add audio queue library (PCM buffering for playback)
+add_library(fijkplayer_audio_queue SHARED
+    audio_queue.c
+)
+
+# Add FFmpeg software decoder library (for diagnostics)
+add_library(fijkplayer_soft_decoder SHARED
+    ffmpeg_soft_decoder.c
+)
+
+# Add frame queue library
+add_library(fijkplayer_frame_queue SHARED
+    frame_queue.c
+)
+
+# Add OpenGL renderer library
+add_library(fijkplayer_gl_renderer SHARED
+    gl_renderer.c
+)
+
+# Add native player library (integrates all components)
+add_library(fijkplayer_native_player SHARED
+    native_player.c
+    jni_bridge.c
+    surface_texture_jni.c
+    async_io_protocol.c
+)
+
+# Add FFmpeg recorder library (legacy)
 add_library(fijkplayer_ffmpeg_recorder SHARED
     ffmpeg_recorder.c
+)
+
+# Include FFmpeg headers
+target_include_directories(fijkplayer_demuxer PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+)
+
+target_include_directories(fijkplayer_decoder PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_audio_decoder PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_soft_decoder PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_frame_queue PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_gl_renderer PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_native_player PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_include_directories(fijkplayer_ffmpeg_recorder PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
 )
 
 # Find system libraries
 find_library(log-lib log)
 find_library(android-lib android)
+find_library(mediandk-lib mediandk)
+find_library(gles2-lib GLESv2)
+find_library(egl-lib EGL)
 
-# Try to find ijkplayer build output directory
-set(IJKPLAYER_BUILD_DIR "/Users/qingsong/Documents/GitHub/ijkplayer/android/contrib/build")
+# Import pre-built FFmpeg libraries
+add_library(avformat SHARED IMPORTED)
+set_target_properties(avformat PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libavformat.so
+)
 
-# Map Android ABI to ijkplayer output directory
-if(${ANDROID_ABI} STREQUAL "armeabi-v7a")
-    set(FFMPEG_INCLUDE_DIR "${IJKPLAYER_BUILD_DIR}/output-armv7a/include")
-    set(FFMPEG_OUTPUT_DIR "${IJKPLAYER_BUILD_DIR}/output-armv7a")
-elseif(${ANDROID_ABI} STREQUAL "arm64-v8a")
-    set(FFMPEG_INCLUDE_DIR "${IJKPLAYER_BUILD_DIR}/output-arm64/include")
-    set(FFMPEG_OUTPUT_DIR "${IJKPLAYER_BUILD_DIR}/output-arm64")
-elseif(${ANDROID_ABI} STREQUAL "x86")
-    set(FFMPEG_INCLUDE_DIR "${IJKPLAYER_BUILD_DIR}/output-x86/include")
-    set(FFMPEG_OUTPUT_DIR "${IJKPLAYER_BUILD_DIR}/output-x86")
-elseif(${ANDROID_ABI} STREQUAL "x86_64")
-    set(FFMPEG_INCLUDE_DIR "${IJKPLAYER_BUILD_DIR}/output-x86_64/include")
-    set(FFMPEG_OUTPUT_DIR "${IJKPLAYER_BUILD_DIR}/output-x86_64")
-endif()
+add_library(avcodec SHARED IMPORTED)
+set_target_properties(avcodec PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libavcodec.so
+)
 
-# Check if FFmpeg headers exist
-if(EXISTS "${FFMPEG_INCLUDE_DIR}")
-    message(STATUS "Using FFmpeg headers from: ${FFMPEG_INCLUDE_DIR}")
-    target_include_directories(fijkplayer_ffmpeg_recorder PRIVATE
-        ${FFMPEG_INCLUDE_DIR}
-    )
-else()
-    message(FATAL_ERROR "FFmpeg headers not found at: ${FFMPEG_INCLUDE_DIR}. Please build ijkplayer first.")
-endif()
+add_library(avutil SHARED IMPORTED)
+set_target_properties(avutil PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libavutil.so
+)
 
-# Import ijkffmpeg as a prebuilt shared library (for compilation only, not bundling)
-# The actual library comes from fijkplayer-full AAR dependency
-set(IJKFFMPEG_LIB_PATH "${FFMPEG_OUTPUT_DIR}/libijkffmpeg.so")
-if(EXISTS "${IJKFFMPEG_LIB_PATH}")
-    message(STATUS "Using ijkffmpeg library for linking: ${IJKFFMPEG_LIB_PATH}")
-    add_library(ijkffmpeg SHARED IMPORTED)
-    set_target_properties(ijkffmpeg PROPERTIES
-        IMPORTED_LOCATION ${IJKFFMPEG_LIB_PATH}
-        IMPORTED_NO_SONAME TRUE
-    )
-else()
-    message(WARNING "libijkffmpeg.so not found at: ${IJKFFMPEG_LIB_PATH}")
-    message(WARNING "Will link against ijkffmpeg from fijkplayer-full AAR at runtime")
-    # Create a dummy target - we'll link dynamically at runtime
-    add_library(ijkffmpeg SHARED IMPORTED)
-    set_target_properties(ijkffmpeg PROPERTIES
-        IMPORTED_NO_SONAME TRUE
-    )
-endif()
+# Link FFmpeg demuxer
+target_link_libraries(fijkplayer_demuxer
+    ${log-lib}
+    ${android-lib}
+    avformat
+    avcodec
+    avutil
+)
 
-# Link libraries
-# Note: ijkffmpeg is linked for symbol resolution but won't be bundled
-# It will be loaded at runtime from the fijkplayer-full AAR
+# Link MediaCodec decoder
+target_link_libraries(fijkplayer_decoder
+    ${log-lib}
+    ${android-lib}
+    ${mediandk-lib}
+    avformat
+    avcodec
+    avutil
+)
+
+# Link audio decoder
+target_link_libraries(fijkplayer_audio_decoder
+    ${log-lib}
+    ${android-lib}
+    ${mediandk-lib}
+    avformat
+    avcodec
+    avutil
+)
+
+# Link audio queue
+target_link_libraries(fijkplayer_audio_queue
+    ${log-lib}
+)
+
+# Link FFmpeg software decoder
+target_link_libraries(fijkplayer_soft_decoder
+    ${log-lib}
+    ${android-lib}
+    avcodec
+    avutil
+)
+
+# Link frame queue
+target_link_libraries(fijkplayer_frame_queue
+    ${log-lib}
+)
+
+# Link packet queue
+target_link_libraries(fijkplayer_packet_queue
+    ${log-lib}
+    fijkplayer_demuxer
+)
+
+# Link OpenGL renderer
+target_link_libraries(fijkplayer_gl_renderer
+    ${log-lib}
+    ${gles2-lib}
+    ${egl-lib}
+)
+
+# Link native player (with all dependencies)
+target_link_libraries(fijkplayer_native_player
+    fijkplayer_demuxer
+    fijkplayer_packet_queue
+    fijkplayer_decoder
+    fijkplayer_audio_decoder
+    fijkplayer_audio_queue
+    fijkplayer_soft_decoder
+    fijkplayer_frame_queue
+    fijkplayer_gl_renderer
+    ${log-lib}
+    ${android-lib}
+    ${mediandk-lib}
+    ${gles2-lib}
+    ${egl-lib}
+    avformat
+    avcodec
+    avutil
+)
+
+# Link FFmpeg recorder
 target_link_libraries(fijkplayer_ffmpeg_recorder
     ${log-lib}
     ${android-lib}
-    ijkffmpeg
+    avformat
+    avcodec
+    avutil
 )

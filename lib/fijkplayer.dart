@@ -35,6 +35,7 @@ import 'package:flutter/services.dart';
 
 part 'core/fijklog.dart';
 part 'core/fijkoption.dart';
+part 'core/fijkplayback.dart';
 part 'core/fijkplayer.dart';
 part 'core/fijkplugin.dart';
 part 'core/fijkvalue.dart';

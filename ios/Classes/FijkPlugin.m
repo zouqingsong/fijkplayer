@@ -22,11 +22,13 @@
 
 #import "FijkPlugin.h"
 #import "FijkPlayer.h"
+#import "FJKNativePlayerHandler.h"
 #import "FijkQueuingEventSink.h"
+#import "FijkRecorderHandler.h"
+#import "FijkFFmpegKitHandler.h"
 
 #import <AVKit/AVKit.h>
 #import <Flutter/Flutter.h>
-#import <IJKMediaPlayer/IJKMediaPlayer.h>
 #import <MediaPlayer/MediaPlayer.h>
 
 typedef NS_ENUM(int, FijkVoUIMode) {
@@ -56,6 +58,7 @@ typedef NS_ENUM(int, FijkVoUIMode) {
 static FijkPlugin *_instance = nil;
 
 + (void)registerWithRegistrar:(NSObject<FlutterPluginRegistrar> *)registrar {
+    // Register main production channel
     FlutterMethodChannel *channel =
         [FlutterMethodChannel methodChannelWithName:@"befovy.com/fijk"
                                     binaryMessenger:[registrar messenger]];
@@ -67,6 +70,33 @@ static FijkPlugin *_instance = nil;
     int64_t vid = [[registrar textures] registerTexture:player];
     [player shutdown];
     [[registrar textures] unregisterTexture:vid];
+    
+    // Register native player test channel
+    FlutterMethodChannel *nativeChannel =
+        [FlutterMethodChannel methodChannelWithName:@"befovy.com/fijk/native_player"
+                                    binaryMessenger:[registrar messenger]];
+    FJKNativePlayerHandler *nativeHandler = [[FJKNativePlayerHandler alloc] initWithTextureRegistry:[registrar textures]];
+    [registrar addMethodCallDelegate:nativeHandler channel:nativeChannel];
+    
+    // Register recorder channel
+    FlutterMethodChannel *recorderChannel =
+        [FlutterMethodChannel methodChannelWithName:@"befovy.com/fijk/recorder"
+                                    binaryMessenger:[registrar messenger]];
+    FijkRecorderHandler *recorderHandler = [[FijkRecorderHandler alloc] init];
+    [registrar addMethodCallDelegate:recorderHandler channel:recorderChannel];
+    
+    // Register FFmpeg kit channel
+    FlutterMethodChannel *ffmpegKitChannel =
+        [FlutterMethodChannel methodChannelWithName:@"befovy.com/fijk/ffmpeg_kit"
+                                    binaryMessenger:[registrar messenger]];
+    FijkFFmpegKitHandler *ffmpegKitHandler = [[FijkFFmpegKitHandler alloc] init];
+    [registrar addMethodCallDelegate:ffmpegKitHandler channel:ffmpegKitChannel];
+    
+    NSLog(@"✅ FijkPlugin (iOS) registered all channels:");
+    NSLog(@"  - Production: befovy.com/fijk");
+    NSLog(@"  - NativePlayer: befovy.com/fijk/native_player");
+    NSLog(@"  - Recorder: befovy.com/fijk/recorder");
+    NSLog(@"  - FFmpeg Kit: befovy.com/fijk/ffmpeg_kit");
 }
 
 + (FijkPlugin *)singleInstance {
@@ -128,7 +158,9 @@ static FijkPlugin *_instance = nil;
         int l = [level intValue] / 100;
         l = l < 0 ? 0 : l;
         l = l > 8 ? 8 : l;
-        [IJKFFMoviePlayerController setLogLevel:l];
+        // Log level control for native player
+        // TODO: Implement native player log level control
+        NSLog(@"[FijkPlugin] Set log level: %d", l);
         result(nil);
     } else if ([@"setOrientationPortrait" isEqualToString:call.method]) {
         UIInterfaceOrientationMask mask = [[UIApplication sharedApplication]

@@ -1,28 +1,28 @@
 /*****************************************************************************
-* ijkplayer_desktop.h
+* fijkplayer_desktop.h
 *****************************************************************************
 *
-* copyright (c) 2019 befovy <befovy@gmail.com>
+* copyright (c) 2019-2025 befovy <befovy@gmail.com>
 *
-* This file is part of ijkPlayer.
+* This file is part of fijkplayer - a Flutter media player plugin.
 *
-* ijkPlayer is free software; you can redistribute it and/or
+* fijkplayer is free software; you can redistribute it and/or
 * modify it under the terms of the GNU Lesser General Public
 * License as published by the Free Software Foundation; either
 * version 2.1 of the License, or (at your option) any later version.
 *
-* ijkPlayer is distributed in the hope that it will be useful,
+* fijkplayer is distributed in the hope that it will be useful,
 * but WITHOUT ANY WARRANTY; without even the implied warranty of
 * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 * Lesser General Public License for more details.
 *
 * You should have received a copy of the GNU Lesser General Public
-* License along with ijkPlayer; if not, write to the Free Software
+* License along with fijkplayer; if not, write to the Free Software
 * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
 */
 
-#ifndef IJKPLAYER_DESKTOP_IJKPLAYER_DESKTOP_H
-#define IJKPLAYER_DESKTOP_IJKPLAYER_DESKTOP_H
+#ifndef FIJKPLAYER_DESKTOP_FIJKPLAYER_DESKTOP_H
+#define FIJKPLAYER_DESKTOP_FIJKPLAYER_DESKTOP_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -206,4 +206,4 @@ IJK_API const char *ijkff_version();
 }
 #endif
 
-#endif // IJKPLAYER_DESKTOP_IJKPLAYER_DESKTOP_H
+#endif // FIJKPLAYER_DESKTOP_FIJKPLAYER_DESKTOP_H

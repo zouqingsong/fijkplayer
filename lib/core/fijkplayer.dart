@@ -115,6 +115,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   Completer<Uint8List>? _snapShot;
   Completer<void>? _recording;
   bool _isRecording = false;
+  Timer? _posTimer;
 
   FijkPlayer()
       : _nativeSetup = Completer(),
@@ -218,6 +219,31 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
         FijkState.started == current ||
         FijkState.paused == current ||
         FijkState.completed == current;
+  }
+
+  /// Start position timer to update position stream and trigger texture updates
+  void _startPosTimer() {
+    _posTimer?.cancel();
+    // Timer serves two purposes:
+    // 1. Update position stream for monitoring (e.g., frame detection in MicVision)
+    // 2. Call notifyListeners() to trigger FijkView texture rebuilds (critical for smooth playback)
+    // Note: State change listeners won't fire because state hasn't changed (_setValue checks)
+    _posTimer = Timer.periodic(Duration(milliseconds: 200), (timer) {
+      if (state == FijkState.started) {
+        // Update position stream
+        _currentPosController.add(DateTime.now().difference(DateTime(0)));
+        // Trigger FijkView updates for texture rendering
+        notifyListeners();
+      }
+    });
+    FijkLog.d("$this position timer started");
+  }
+
+  /// Stop position timer
+  void _stopPosTimer() {
+    _posTimer?.cancel();
+    _posTimer = null;
+    FijkLog.d("$this position timer stopped");
   }
 
   /// set option
@@ -488,6 +514,35 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     }
   }
 
+  /// Set playback mode for different scenarios
+  ///
+  /// Configure the player for optimal performance based on the use case:
+  /// - [FijkPlaybackMode.liveLowLatency]: Real-time live video, no audio, minimum latency
+  /// - [FijkPlaybackMode.liveWithAudio]: Live video with synchronized audio
+  /// - [FijkPlaybackMode.vodOptimized]: Video-on-demand with smooth buffering
+  ///
+  /// This method should be called after creating the player and before setting the data source.
+  ///
+  /// Example:
+  /// ```dart
+  /// // For security camera live feed
+  /// await player.setPlaybackMode(FijkPlaybackConfig.liveLowLatency());
+  /// await player.setDataSource(rtspUrl);
+  ///
+  /// // For live streaming with audio
+  /// await player.setPlaybackMode(FijkPlaybackConfig.liveWithAudio());
+  /// await player.setDataSource(rtspUrl);
+  ///
+  /// // For recorded video playback
+  /// await player.setPlaybackMode(FijkPlaybackConfig.vodOptimized());
+  /// await player.setDataSource(videoUrl);
+  /// ```
+  Future<void> setPlaybackMode(FijkPlaybackConfig config) async {
+    await _nativeSetup.future;
+    FijkLog.i("$this setPlaybackMode ${config.mode}");
+    return _channel.invokeMethod("setPlaybackMode", config.toMap());
+  }
+
   /// set volume of this player audio track
   ///
   /// This dose not change system volume.
@@ -619,6 +674,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     int cid = _callId;
     FijkLog.i("$this invoke release #$cid");
     if (isPlayable()) await stop();
+    _stopPosTimer(); // Stop position timer before release
     _setValue(value.copyWith(state: FijkState.end));
     await _nativeEventSubscription?.cancel();
     _nativeEventSubscription = null;
@@ -698,6 +754,13 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
                 prepared: false, state: fpState, exception: fijkException));
           } else {
             _setValue(value.copyWith(state: fpState, exception: fijkException));
+          }
+          
+          // Start/stop position timer based on playback state
+          if (fpState == FijkState.started) {
+            _startPosTimer();
+          } else {
+            _stopPosTimer();
           }
         }
         break;
