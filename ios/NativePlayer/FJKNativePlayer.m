@@ -447,54 +447,59 @@
         return;
     }
     
-    // Phase 3: Initialize audio (find audio stream)
-    _audioStreamIndex = ff_demuxer_find_audio_stream(_demuxer);
-    if (_audioStreamIndex >= 0) {
-        FFStream *audioStream = ff_demuxer_get_stream(_demuxer, _audioStreamIndex);
-        if (audioStream && audioStream->type == FF_STREAM_TYPE_AUDIO) {
-            NSLog(@"[FJKNativePlayer] 🔊 Found audio stream: %d Hz, %d channels, codec=%d",
-                  audioStream->sample_rate, audioStream->channels, audioStream->audio_codec);
-            
-            // Create audio decoder
-            _audioDecoder = fjk_audio_decoder_create(audioStream);
-            if (!_audioDecoder) {
-                NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio decoder");
-                _audioStreamIndex = -1;
-            } else {
-                // Create audio queue (200ms buffer for fast audio start)
-                FJKAudioQueueConfig queueConfig = {
-                    .sample_rate = audioStream->sample_rate,
-                    .channels = audioStream->channels,
-                    .format = FJK_AUDIO_QUEUE_FORMAT_S16,
-                    .capacity_ms = 200
-                };
-                _audioQueue = fjk_audio_queue_create(&queueConfig);
+    // Phase 3: Initialize audio (find audio stream) - Only if audio is enabled
+    if (_enableAudio) {
+        _audioStreamIndex = ff_demuxer_find_audio_stream(_demuxer);
+        if (_audioStreamIndex >= 0) {
+            FFStream *audioStream = ff_demuxer_get_stream(_demuxer, _audioStreamIndex);
+            if (audioStream && audioStream->type == FF_STREAM_TYPE_AUDIO) {
+                NSLog(@"[FJKNativePlayer] 🔊 Found audio stream: %d Hz, %d channels, codec=%d",
+                      audioStream->sample_rate, audioStream->channels, audioStream->audio_codec);
                 
-                if (!_audioQueue) {
-                    NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio queue");
-                    fjk_audio_decoder_destroy(_audioDecoder);
-                    _audioDecoder = NULL;
+                // Create audio decoder
+                _audioDecoder = fjk_audio_decoder_create(audioStream);
+                if (!_audioDecoder) {
+                    NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio decoder");
                     _audioStreamIndex = -1;
                 } else {
-                    // Create audio renderer
-                    _audioRenderer = [[FJKAudioRenderer alloc] initWithSampleRate:audioStream->sample_rate
-                                                                          channels:audioStream->channels];
-                    if (!_audioRenderer) {
-                        NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio renderer");
-                        fjk_audio_queue_destroy(_audioQueue);
+                    // Create audio queue (200ms buffer for fast audio start)
+                    FJKAudioQueueConfig queueConfig = {
+                        .sample_rate = audioStream->sample_rate,
+                        .channels = audioStream->channels,
+                        .format = FJK_AUDIO_QUEUE_FORMAT_S16,
+                        .capacity_ms = 200
+                    };
+                    _audioQueue = fjk_audio_queue_create(&queueConfig);
+                    
+                    if (!_audioQueue) {
+                        NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio queue");
                         fjk_audio_decoder_destroy(_audioDecoder);
-                        _audioQueue = NULL;
                         _audioDecoder = NULL;
                         _audioStreamIndex = -1;
                     } else {
-                        [_audioRenderer setVolume:1.0];  // Maximum volume
-                        NSLog(@"[FJKNativePlayer] ✅ Audio pipeline ready");
+                        // Create audio renderer
+                        _audioRenderer = [[FJKAudioRenderer alloc] initWithSampleRate:audioStream->sample_rate
+                                                                              channels:audioStream->channels];
+                        if (!_audioRenderer) {
+                            NSLog(@"[FJKNativePlayer] ⚠️ Failed to create audio renderer");
+                            fjk_audio_queue_destroy(_audioQueue);
+                            fjk_audio_decoder_destroy(_audioDecoder);
+                            _audioQueue = NULL;
+                            _audioDecoder = NULL;
+                            _audioStreamIndex = -1;
+                        } else {
+                            [_audioRenderer setVolume:1.0];  // Maximum volume
+                            NSLog(@"[FJKNativePlayer] ✅ Audio pipeline ready");
+                        }
                     }
                 }
             }
+        } else {
+            NSLog(@"[FJKNativePlayer] ℹ️ No audio stream found");
         }
     } else {
-        NSLog(@"[FJKNativePlayer] ℹ️ No audio stream found");
+        NSLog(@"[FJKNativePlayer] 🔇 Audio disabled by playback mode");
+        _audioStreamIndex = -1;
     }
     
     [_stateLock lock];

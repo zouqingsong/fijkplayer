@@ -91,6 +91,7 @@ typedef struct {
     bool enable_tcp;              // Use TCP for RTSP (default: true)
     bool enable_lowdelay;         // Enable low-delay mode for live streams (default: true)
     char* user_agent;             // User agent for HTTP streams
+    int playback_mode;            // 0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED
 } FFDemuxerOptions;
 
 /*

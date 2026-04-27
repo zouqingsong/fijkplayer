@@ -223,6 +223,9 @@ int native_player_set_playback_mode(NativePlayer* player, int mode, int bufferMs
     // Mode 1: LIVE_WITH_AUDIO (audio sync, low latency, moderate frame drop)
     // Mode 2: VOD_OPTIMIZED (smooth playback, larger buffer, no frame drop)
     
+    // Store playback mode for demuxer configuration
+    player->options.playback_mode = mode;
+    
     switch (mode) {
         case 0: // LIVE_LOW_LATENCY
             player->options.buffer_size = (bufferMs > 0) ? (bufferMs / 100) : 1;  // ~1-2 frames
@@ -279,8 +282,15 @@ int native_player_prepare_async(NativePlayer* player) {
         return -1;
     }
     
-    // Open media
-    if (ff_demuxer_open(player->demuxer, player->data_source, NULL) < 0) {
+    // Configure demuxer options based on playback mode
+    FFDemuxerOptions demux_opts = {0};
+    demux_opts.timeout_us = 10000000;  // 10 seconds
+    demux_opts.enable_tcp = true;
+    demux_opts.enable_lowdelay = (player->options.playback_mode == 0);  // Only for LIVE_LOW_LATENCY
+    demux_opts.playback_mode = player->options.playback_mode;
+    
+    // Open media with mode-specific FFmpeg options
+    if (ff_demuxer_open(player->demuxer, player->data_source, &demux_opts) < 0) {
         LOGE("Failed to open media: %s", player->data_source);
         post_event(player, PLAYER_EVENT_ERROR, -2, 0);
         return -1;

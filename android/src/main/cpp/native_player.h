@@ -74,6 +74,7 @@ typedef struct {
     int max_video_height;        // Max video height (0 = no limit)
     int enable_audio;            // Enable audio decoding/playback (default: true)
     int max_latency_ms;          // Maximum acceptable latency for live streams (0 = no limit)
+    int playback_mode;           // 0=LIVE_LOW_LATENCY, 1=LIVE_WITH_AUDIO, 2=VOD_OPTIMIZED
 } PlayerOptions;
 
 // Player statistics

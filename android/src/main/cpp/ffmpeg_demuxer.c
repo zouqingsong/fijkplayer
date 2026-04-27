@@ -213,50 +213,94 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
     
     int ret;
     AVDictionary* opts = NULL;
+    int playback_mode = options ? options->playback_mode : 0;  // Default to LIVE_LOW_LATENCY
     
-    // Apply options
-    if (options) {
-        if (options->timeout_us > 0) {
-            char timeout_str[32];
-            snprintf(timeout_str, sizeof(timeout_str), "%lld", (long long)options->timeout_us);
-            av_dict_set(&opts, "timeout", timeout_str, 0);
-        }
+    // ═══════════════════════════════════════════════════════════════════
+    // MODE-SPECIFIC FFmpeg OPTIONS
+    // ═══════════════════════════════════════════════════════════════════
+    
+    if (playback_mode == 0) {
+        // MODE 0: LIVE_LOW_LATENCY - Ultra-low latency for live surveillance
+        LOGI("📹 Applying LIVE_LOW_LATENCY FFmpeg options");
         
-        if (options->enable_tcp) {
-            av_dict_set(&opts, "rtsp_transport", "tcp", 0);
-        }
+        // Format options - minimal buffering
+        av_dict_set(&opts, "fflags", "nobuffer", 0);           // Disable buffering
+        av_dict_set(&opts, "flags", "low_delay", 0);           // Low delay mode
+        av_dict_set(&opts, "flush_packets", "1", 0);           // Flush packets immediately
+        av_dict_set(&opts, "max_delay", "0", 0);               // No muxing delay
+        av_dict_set(&opts, "probesize", "32", 0);              // 32 bytes minimal probe
+        av_dict_set(&opts, "analyzeduration", "0", 0);         // No pre-analysis
         
-        if (options->enable_lowdelay) {
-            av_dict_set(&opts, "fflags", "nobuffer", 0);
-            av_dict_set(&opts, "flags", "low_delay", 0);
-        }
+        // RTSP options
+        av_dict_set(&opts, "rtsp_transport", "tcp", 0);        // TCP for reliability
+        av_dict_set(&opts, "rtsp_flags", "prefer_tcp", 0);
         
-        if (options->user_agent) {
-            av_dict_set(&opts, "user_agent", options->user_agent, 0);
-        }
+        // Network buffer
+        av_dict_set(&opts, "buffer_size", "1024", 0);          // 1KB buffer
+        
+    } else if (playback_mode == 1) {
+        // MODE 1: LIVE_WITH_AUDIO - Balanced latency with audio sync
+        LOGI("🎬 Applying LIVE_WITH_AUDIO FFmpeg options");
+        
+        // Format options - moderate buffering
+        av_dict_set(&opts, "fflags", "nobuffer", 0);
+        av_dict_set(&opts, "flags", "low_delay", 0);
+        av_dict_set(&opts, "probesize", "5000", 0);            // 5KB probe
+        av_dict_set(&opts, "analyzeduration", "1000000", 0);   // 1 second analysis
+        
+        // RTSP options
+        av_dict_set(&opts, "rtsp_transport", "tcp", 0);
+        
+        // Network buffer
+        av_dict_set(&opts, "buffer_size", "4096", 0);          // 4KB buffer
+        
     } else {
-        // Default options - apply based on protocol
-        av_dict_set(&opts, "timeout", "10000000", 0); // 10 seconds timeout for network
+        // MODE 2: VOD_OPTIMIZED - Smooth playback for on-demand content
+        LOGI("🎞️ Applying VOD_OPTIMIZED FFmpeg options");
         
-        // Check if URL is HTTP/HTTPS
-        if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
-            av_dict_set(&opts, "reconnect", "1", 0);
-            av_dict_set(&opts, "reconnect_streamed", "1", 0);
-            av_dict_set(&opts, "reconnect_delay_max", "5", 0);
-            av_dict_set(&opts, "multiple_requests", "1", 0);  // HTTP persistent connections
-            av_dict_set(&opts, "seekable", "0", 0);  // Treat HTTP as non-seekable for streaming
-            
-            // HTTPS/SSL specific options
-            if (strncmp(url, "https://", 8) == 0) {
-                LOGI("🔒 HTTPS URL detected, configuring TLS options");
-                // Use basic TLS options that are more widely supported
-                av_dict_set(&opts, "tls_verify", "0", 0);        // Disable strict certificate verification for compatibility
-                av_dict_set(&opts, "method", "GET", 0);          // Explicit HTTP method
-            }
-        } else if (strncmp(url, "rtsp://", 7) == 0) {
-            // RTSP-specific options
-            av_dict_set(&opts, "rtsp_transport", "tcp", 0);
-            av_dict_set(&opts, "fflags", "nobuffer", 0);
+        // Format options - full buffering
+        av_dict_set(&opts, "probesize", "5000000", 0);         // 5MB probe
+        av_dict_set(&opts, "analyzeduration", "5000000", 0);   // 5 seconds analysis
+        
+        // Network buffer
+        av_dict_set(&opts, "buffer_size", "32768", 0);         // 32KB buffer
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════
+    // COMMON OPTIONS (all modes)
+    // ═══════════════════════════════════════════════════════════════════
+    
+    // Timeout
+    if (options && options->timeout_us > 0) {
+        char timeout_str[32];
+        snprintf(timeout_str, sizeof(timeout_str), "%lld", (long long)options->timeout_us);
+        av_dict_set(&opts, "timeout", timeout_str, 0);
+    } else {
+        av_dict_set(&opts, "timeout", "10000000", 0);  // 10 seconds default
+    }
+    
+    // User agent
+    if (options && options->user_agent) {
+        av_dict_set(&opts, "user_agent", options->user_agent, 0);
+    }
+    
+    // Protocol-specific options
+    if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
+        // HTTP/HTTPS options
+        av_dict_set(&opts, "reconnect", "1", 0);
+        av_dict_set(&opts, "reconnect_streamed", "1", 0);
+        av_dict_set(&opts, "reconnect_delay_max", "5", 0);
+        av_dict_set(&opts, "multiple_requests", "1", 0);
+        
+        if (playback_mode != 2) {  // Live modes treat HTTP as non-seekable
+            av_dict_set(&opts, "seekable", "0", 0);
+        }
+        
+        // HTTPS/SSL options
+        if (strncmp(url, "https://", 8) == 0) {
+            LOGI("🔒 HTTPS URL detected, configuring TLS options");
+            av_dict_set(&opts, "tls_verify", "0", 0);
+            av_dict_set(&opts, "method", "GET", 0);
         }
     }
     

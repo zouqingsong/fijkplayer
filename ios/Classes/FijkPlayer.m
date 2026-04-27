@@ -395,6 +395,24 @@ static const int end = 9;
         // Options not applicable to native player
         result(@(0));
         
+    } else if ([@"setPlaybackMode" isEqualToString:call.method]) {
+        NSNumber *mode = call.arguments[@"mode"];
+        NSNumber *bufferMs = call.arguments[@"bufferMs"];
+        NSNumber *enableAudio = call.arguments[@"enableAudio"];
+        NSNumber *maxLatencyMs = call.arguments[@"maxLatencyMs"];
+        NSNumber *enableFrameDrop = call.arguments[@"enableFrameDrop"];
+        
+        int ret = [_nativePlayer setPlaybackMode:[mode integerValue]
+                                        bufferMs:[bufferMs integerValue]
+                                     enableAudio:[enableAudio integerValue]
+                                   maxLatencyMs:[maxLatencyMs integerValue]
+                                 enableFrameDrop:[enableFrameDrop integerValue]];
+        
+        NSLog(@"[FijkPlayer] setPlaybackMode: mode=%@, buffer=%@ms, audio=%@, latency=%@ms, frameDrop=%@, result=%d",
+              mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop, ret);
+        
+        result(@(ret));
+        
     } else if ([@"setupSurface" isEqualToString:call.method]) {
         // NSLog(@"[FijkPlayer] setupSurface called, returning texture ID: %lld", (long long)_vid);
         // Return the texture ID that was registered in prepareAsync
