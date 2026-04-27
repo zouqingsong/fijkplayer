@@ -226,9 +226,9 @@ void FijkPlugin::HandleFFmpegKitCall(
         // Build argv
         int argc = (int)cmd_args.size() + 1;
         char** argv = new char*[argc + 1];
-        argv[0] = strdup("ffmpeg");
+        argv[0] = _strdup("ffmpeg");
         for (int i = 0; i < (int)cmd_args.size(); i++) {
-            argv[i + 1] = strdup(cmd_args[i].c_str());
+            argv[i + 1] = _strdup(cmd_args[i].c_str());
         }
         argv[argc] = nullptr;
 
