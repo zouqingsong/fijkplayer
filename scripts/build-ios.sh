@@ -2,7 +2,7 @@
 
 # FFmpeg build script for iOS with SecureTransport (HTTPS support)
 # Builds minimal FFmpeg for arm64 (device) and x86_64 (simulator)
-# For fijkplayer - RTSP/HTTP/HTTPS streaming with hardware decoding
+# For fijkplayer - RTSP/HTTP/HTTPS streaming with hardware decoding + encoding
 
 set -e
 
@@ -84,17 +84,20 @@ get_common_flags() {
         --disable-debug \
         --disable-avdevice \
         --disable-postproc \
-        --disable-avfilter \
-        --disable-swscale \
-        --disable-swresample \
-        --enable-protocol=file,rtsp,rtp,tcp,udp,http,https,tls,crypto \
+        --enable-avfilter \
+        --enable-swscale \
+        --enable-swresample \
+        --enable-protocol=file,rtsp,rtp,tcp,udp,http,https,tls,crypto,pipe,concat \
         --enable-securetransport \
-        --enable-demuxer=rtsp,sdp,rtp,h264,hevc,aac,mov,mp4,flv,mpegts \
+        --enable-demuxer=rtsp,sdp,rtp,h264,hevc,aac,mov,mp4,flv,mpegts,concat,pcm_s16le,wav \
         --enable-parser=h264,hevc,aac,aac_latm \
-        --enable-decoder=h264,hevc,aac \
-        --disable-encoders \
-        --disable-muxers \
-        --disable-filters \
+        --enable-decoder=h264,hevc,aac,pcm_s16le \
+        --enable-encoder=aac,h264_videotoolbox,hevc_videotoolbox,pcm_s16le \
+        --enable-muxer=mp4,mov,mpegts,flv,wav,adts \
+        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
+        --enable-filter=concat,scale,null,anull,aresample,format,aformat \
+        --disable-filter=scale_vt \
+        --enable-videotoolbox \
         --disable-indevs \
         --disable-outdevs \
         --disable-hwaccels \
@@ -102,7 +105,6 @@ get_common_flags() {
         --disable-v4l2-m2m \
         --disable-vaapi \
         --disable-vdpau \
-        --disable-videotoolbox \
         --disable-audiotoolbox \
         --disable-appkit \
         --disable-coreimage \
@@ -148,7 +150,6 @@ build_arch() {
         --arch="$ARCH" \
         --cc="clang" \
         --cxx="clang++" \
-        --as="gas-preprocessor.pl -arch $ARCH -- clang" \
         --extra-cflags="$CFLAGS" \
         --extra-ldflags="$LDFLAGS" \
         --nm="nm" \
@@ -221,7 +222,6 @@ build_arm64_simulator() {
         --arch="arm64" \
         --cc="clang" \
         --cxx="clang++" \
-        --as="gas-preprocessor.pl -arch arm64 -- clang" \
         --extra-cflags="$CFLAGS" \
         --extra-ldflags="$LDFLAGS" \
         --nm="nm" \
@@ -267,7 +267,7 @@ create_framework() {
     
     if [ -d "$X86_64_LIB" ]; then
         echo -e "${GREEN}Creating universal binaries...${NC}"
-        for lib in libavcodec libavformat libavutil; do
+        for lib in libavcodec libavformat libavutil libswscale libswresample libavfilter; do
             lipo -create \
                 "${ARM64_LIB}/${lib}.dylib" \
                 "${X86_64_LIB}/${lib}.dylib" \
@@ -275,7 +275,7 @@ create_framework() {
         done
     else
         echo -e "${YELLOW}Simulator build not available, using arm64 only${NC}"
-        for lib in libavcodec libavformat libavutil; do
+        for lib in libavcodec libavformat libavutil libswscale libswresample libavfilter; do
             cp "${ARM64_LIB}/${lib}.dylib" "${FRAMEWORK_DIR}/"
         done
     fi
@@ -343,6 +343,13 @@ copy_to_fijkplayer() {
     # Copy headers
     echo -e "${GREEN}Copying headers...${NC}"
     cp -r "${OUTPUT_DIR}/ios-arm64/include/"* "${FIJKPLAYER_IOS}/include/"
+    
+    # Copy config.h (needed by fftools sources in FFmpegKit/)
+    echo -e "${GREEN}Copying config.h for FFmpegKit...${NC}"
+    if [ -f "${BUILD_DIR}/${FFMPEG_SOURCE}/config.h" ]; then
+        cp "${BUILD_DIR}/${FFMPEG_SOURCE}/config.h" "${FIJKPLAYER_IOS}/include/"
+        echo -e "${GREEN}config.h copied${NC}"
+    fi
     
     echo -e "${GREEN}Files copied to: ${FIJKPLAYER_IOS}${NC}"
     echo -e "${GREEN}Libraries:${NC}"

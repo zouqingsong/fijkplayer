@@ -9,6 +9,7 @@
 #import "FijkHostOption.h"
 #import "FijkPlugin.h"
 #import "FijkQueuingEventSink.h"
+#import "FFmpegRecorder.h"
 
 #import <Flutter/Flutter.h>
 #import <Foundation/Foundation.h>
@@ -46,6 +47,8 @@ static atomic_int atomicId = 0;
     int _state;
     int _pid;
     int64_t _vid;
+    
+    NSString *_dataSource;
 }
 
 static const int idle = 0;
@@ -317,6 +320,7 @@ static const int end = 9;
 - (void)handleMethodCall:(FlutterMethodCall *)call result:(FlutterResult)result {
     if ([@"setDataSource" isEqualToString:call.method]) {
         NSString *url = call.arguments[@"url"];
+        _dataSource = [url copy];
         int ret = [_nativePlayer setDataSource:url];
         // NSLog(@"[FijkPlayer] setDataSource returned: %d", ret);
         if (ret == 0) {
@@ -417,6 +421,76 @@ static const int end = 9;
         // NSLog(@"[FijkPlayer] setupSurface called, returning texture ID: %lld", (long long)_vid);
         // Return the texture ID that was registered in prepareAsync
         result(@(_vid));
+        
+    } else if ([@"startFFmpegRecording" isEqualToString:call.method]) {
+        NSString *path = call.arguments[@"path"];
+        if (!_dataSource || _dataSource.length == 0) {
+            result([FlutterError errorWithCode:@"NO_DATA_SOURCE"
+                                       message:@"No data source set for recording"
+                                       details:nil]);
+            return;
+        }
+        NSError *error = nil;
+        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+                                                                      outputPath:path
+                                                                           error:&error];
+        if (started) {
+            // Notify Dart that recording started
+            [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];
+            result(@(0));
+        } else {
+            NSString *msg = error ? error.localizedDescription : @"Failed to start recording";
+            [_methodChannel invokeMethod:@"_onRecordingError" arguments:msg];
+            result([FlutterError errorWithCode:@"RECORDING_FAILED" message:msg details:nil]);
+        }
+        
+    } else if ([@"stopFFmpegRecording" isEqualToString:call.method]) {
+        NSError *error = nil;
+        [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
+        if (error) {
+            result([FlutterError errorWithCode:@"STOP_RECORDING_FAILED"
+                                       message:error.localizedDescription
+                                       details:nil]);
+        } else {
+            result(@(0));
+        }
+        
+    } else if ([@"isFFmpegRecording" isEqualToString:call.method]) {
+        BOOL recording = [[FFmpegRecorder sharedInstance] isRecording];
+        result(@(recording));
+        
+    } else if ([@"startRecording" isEqualToString:call.method]) {
+        // Use FFmpeg recording (same as startFFmpegRecording)
+        NSString *path = call.arguments[@"path"];
+        if (!_dataSource || _dataSource.length == 0) {
+            result([FlutterError errorWithCode:@"NO_DATA_SOURCE"
+                                       message:@"No data source set for recording"
+                                       details:nil]);
+            return;
+        }
+        NSError *error = nil;
+        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+                                                                      outputPath:path
+                                                                           error:&error];
+        if (started) {
+            [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];
+            result(@(0));
+        } else {
+            NSString *msg = error ? error.localizedDescription : @"Failed to start recording";
+            [_methodChannel invokeMethod:@"_onRecordingError" arguments:msg];
+            result([FlutterError errorWithCode:@"RECORDING_FAILED" message:msg details:nil]);
+        }
+        
+    } else if ([@"stopRecording" isEqualToString:call.method]) {
+        NSError *error = nil;
+        [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
+        if (error) {
+            result([FlutterError errorWithCode:@"STOP_RECORDING_FAILED"
+                                       message:error.localizedDescription
+                                       details:nil]);
+        } else {
+            result(@(0));
+        }
         
     } else if ([@"release" isEqualToString:call.method]) {
         [self shutdown];

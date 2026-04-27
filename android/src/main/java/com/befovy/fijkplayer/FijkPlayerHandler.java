@@ -211,6 +211,7 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             }
             try {
                 instance.player.setDataSource(url);
+                instance.dataSource = url;
 
                 // Send state change: idle -> initialized
                 instance.sendStateChange(PlayerInstance.STATE_INITIALIZED);
@@ -421,9 +422,73 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             break;
         }
         default:
+            // Check for recording methods before returning notImplemented
+            if (handleRecordingMethod(instance, call, result)) {
+                return;
+            }
             Log.w(TAG, "Unimplemented per-player method: " + call.method);
             result.notImplemented();
             break;
+        }
+    }
+
+    /**
+     * Handle FFmpeg recording method calls for a player instance.
+     * Returns true if the method was handled, false otherwise.
+     */
+    private boolean handleRecordingMethod(PlayerInstance instance, MethodCall call, MethodChannel.Result result) {
+        switch (call.method) {
+            case "startFFmpegRecording":
+            case "startRecording": {
+                String path = call.argument("path");
+                if (path == null) {
+                    result.error("INVALID_ARGS", "Missing path", null);
+                    return true;
+                }
+                if (instance.dataSource == null || instance.dataSource.isEmpty()) {
+                    result.error("NO_DATA_SOURCE", "No data source set for recording", null);
+                    return true;
+                }
+                try {
+                    if (instance.ffmpegRecorder == null) {
+                        instance.ffmpegRecorder = new FijkFFmpegRecorder();
+                    }
+                    boolean started = instance.ffmpegRecorder.startRecording(instance.dataSource, path);
+                    if (started) {
+                        // Notify Dart that recording started
+                        instance.methodChannel.invokeMethod("_onRecordingStarted", null);
+                        result.success(null);
+                    } else {
+                        instance.methodChannel.invokeMethod("_onRecordingError", "Failed to start recording");
+                        result.error("RECORDING_FAILED", "Failed to start FFmpeg recording", null);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to start recording", e);
+                    instance.methodChannel.invokeMethod("_onRecordingError", e.getMessage());
+                    result.error("RECORDING_FAILED", e.getMessage(), null);
+                }
+                return true;
+            }
+            case "stopFFmpegRecording":
+            case "stopRecording": {
+                try {
+                    if (instance.ffmpegRecorder != null) {
+                        instance.ffmpegRecorder.stopRecording();
+                    }
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to stop recording", e);
+                    result.error("STOP_RECORDING_FAILED", e.getMessage(), null);
+                }
+                return true;
+            }
+            case "isFFmpegRecording": {
+                boolean isRec = instance.ffmpegRecorder != null && instance.ffmpegRecorder.isRecording();
+                result.success(isRec);
+                return true;
+            }
+            default:
+                return false;
         }
     }
 
@@ -876,6 +941,8 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         private int currentState = STATE_IDLE;
         private int videoWidth = 0;
         private int videoHeight = 0;
+        private String dataSource = null;
+        private FijkFFmpegRecorder ffmpegRecorder = null;
 
         PlayerInstance(int playerId, FJKNativePlayer player,
                        TextureRegistry.SurfaceTextureEntry textureEntry,
@@ -966,6 +1033,15 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         }
 
         void release() {
+            // Stop any active recording
+            if (ffmpegRecorder != null && ffmpegRecorder.isRecording()) {
+                try {
+                    ffmpegRecorder.stopRecording();
+                } catch (Exception e) {
+                    Log.w(TAG, "Error stopping recording during release", e);
+                }
+            }
+            
             // Clean up event channel
             if (eventChannel != null) {
                 eventChannel.setStreamHandler(null);

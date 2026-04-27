@@ -29,6 +29,12 @@ flutter:
         pluginClass: FijkPlugin
       ios:
         pluginClass: FijkPlugin
+      macos:
+        pluginClass: FijkPlugin
+      windows:
+        pluginClass: FijkplayerPlugin
+      linux:
+        pluginClass: FijkplayerPlugin
 
   # To add assets to your plugin package, add an assets section, like this:
   # assets:

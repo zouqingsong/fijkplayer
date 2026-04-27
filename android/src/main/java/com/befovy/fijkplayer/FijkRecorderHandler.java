@@ -9,20 +9,20 @@ import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 
 /**
- * Recorder Handler - Stub implementation for recording functionality
+ * Recorder Handler - delegates to FijkFFmpegRecorder for actual recording
  * 
  * Channel: befovy.com/fijk/recorder
- * 
- * This is a placeholder that will be integrated with existing ffmpeg_recorder.c
  */
 public class FijkRecorderHandler implements MethodChannel.MethodCallHandler {
     
     private static final String TAG = "FijkRecorderHandler";
     private final Context context;
+    private FijkFFmpegRecorder recorder;
     
     public FijkRecorderHandler(Context context) {
         this.context = context;
-        Log.i(TAG, "FijkRecorderHandler initialized (stub)");
+        this.recorder = new FijkFFmpegRecorder();
+        Log.i(TAG, "FijkRecorderHandler initialized");
     }
     
     @Override
@@ -31,18 +31,34 @@ public class FijkRecorderHandler implements MethodChannel.MethodCallHandler {
         
         switch (call.method) {
             case "isRecording":
-                // Stub implementation
-                Log.i(TAG, "isRecording called - returning false (stub)");
-                result.success(false);
+                result.success(recorder.isRecording());
                 break;
-            case "startRecording":
-                Log.i(TAG, "startRecording called (stub)");
-                result.success(null);
+            case "startRecording": {
+                String rtspUrl = call.argument("rtspUrl");
+                String outputPath = call.argument("outputPath");
+                if (rtspUrl == null || outputPath == null) {
+                    result.error("INVALID_ARGS", "Missing rtspUrl or outputPath", null);
+                    return;
+                }
+                try {
+                    boolean started = recorder.startRecording(rtspUrl, outputPath);
+                    result.success(started);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to start recording", e);
+                    result.error("RECORDING_FAILED", e.getMessage(), null);
+                }
                 break;
-            case "stopRecording":
-                Log.i(TAG, "stopRecording called (stub)");
-                result.success(null);
+            }
+            case "stopRecording": {
+                try {
+                    boolean stopped = recorder.stopRecording();
+                    result.success(stopped);
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to stop recording", e);
+                    result.error("STOP_FAILED", e.getMessage(), null);
+                }
                 break;
+            }
             default:
                 Log.w(TAG, "Unimplemented recorder method: " + call.method);
                 result.notImplemented();

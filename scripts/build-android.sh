@@ -2,7 +2,7 @@
 # FFmpeg Build Script for Android
 # This script compiles FFmpeg with minimal configuration for video streaming playback
 # Target: arm64-v8a and armeabi-v7a
-# Purpose: RTSP streaming with hardware-accelerated decoding via MediaCodec
+# Purpose: RTSP streaming with hardware-accelerated decoding via MediaCodec + encoding
 
 set -e  # Exit on error
 
@@ -180,16 +180,17 @@ build_arch() {
         --disable-ffprobe \
         --disable-avdevice \
         --disable-postproc \
-        --disable-swscale \
-        --disable-swresample \
-        --disable-avfilter \
-        --enable-protocol=file,rtsp,rtp,tcp,udp,http,https,tls,crypto \
-        --enable-demuxer=rtsp,sdp,rtp,h264,hevc,aac,mov,mp4,flv,mpegts \
+        --enable-swscale \
+        --enable-swresample \
+        --enable-avfilter \
+        --enable-protocol=file,rtsp,rtp,tcp,udp,http,https,tls,crypto,pipe,concat \
+        --enable-demuxer=rtsp,sdp,rtp,h264,hevc,aac,mov,mp4,flv,mpegts,concat,pcm_s16le,wav \
         --enable-parser=h264,hevc,aac,aac_latm \
-        --enable-decoder=h264,aac \
-        --disable-encoders \
-        --disable-muxers \
-        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb \
+        --enable-decoder=h264,aac,pcm_s16le \
+        --enable-encoder=aac,pcm_s16le \
+        --enable-muxer=mp4,mov,mpegts,flv,wav,adts \
+        --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
+        --enable-filter=concat,scale,null,anull,aresample,format,aformat \
         --enable-network \
         --enable-openssl \
         --enable-small \

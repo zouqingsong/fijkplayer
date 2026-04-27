@@ -183,3 +183,55 @@ class FijkPlugin {
     FijkLog.e("plugin errorListerner: $obj");
   }
 }
+
+/// FFmpeg command execution API.
+/// Replaces ffmpeg_kit_flutter dependency with built-in FFmpeg support.
+class FijkFFmpegKit {
+  const FijkFFmpegKit._();
+
+  static const MethodChannel _channel =
+      MethodChannel('befovy.com/fijk/ffmpeg_kit');
+
+  /// Execute an FFmpeg command string.
+  /// Returns 0 on success, non-zero on error.
+  ///
+  /// Example:
+  /// ```dart
+  /// int ret = await FijkFFmpegKit.execute('-i input.mp4 -c:v copy output.mp4');
+  /// ```
+  static Future<int> execute(String command) async {
+    final result = await _channel.invokeMethod<int>(
+      'execute',
+      {'command': command},
+    );
+    return result ?? -1;
+  }
+
+  /// Execute an FFmpeg command with explicit arguments.
+  /// Returns 0 on success, non-zero on error.
+  ///
+  /// Example:
+  /// ```dart
+  /// int ret = await FijkFFmpegKit.executeWithArguments([
+  ///   '-i', 'input.mp4', '-c:v', 'copy', 'output.mp4'
+  /// ]);
+  /// ```
+  static Future<int> executeWithArguments(List<String> arguments) async {
+    final result = await _channel.invokeMethod<int>(
+      'execute',
+      {'arguments': arguments},
+    );
+    return result ?? -1;
+  }
+
+  /// Cancel the currently running FFmpeg command.
+  static Future<void> cancel() {
+    return _channel.invokeMethod('cancel');
+  }
+
+  /// Get the FFmpeg version string.
+  static Future<String> getFFmpegVersion() async {
+    final result = await _channel.invokeMethod<String>('getFFmpegVersion');
+    return result ?? 'unknown';
+  }
+}

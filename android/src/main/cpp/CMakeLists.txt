@@ -93,6 +93,26 @@ add_library(fijkplayer_ffmpeg_recorder SHARED
     ffmpeg_recorder.c
 )
 
+# Add FFmpegKit command executor library
+add_library(fijkplayer_ffmpeg_kit SHARED
+    ffmpeg_kit_jni.c
+    fftools/ffmpeg_kit_execute.c
+    fftools/ffmpeg.c
+    fftools/ffmpeg_opt.c
+    fftools/ffmpeg_filter.c
+    fftools/ffmpeg_hw.c
+    fftools/ffmpeg_demux.c
+    fftools/ffmpeg_mux.c
+    fftools/ffmpeg_mux_init.c
+    fftools/ffmpeg_dec.c
+    fftools/ffmpeg_enc.c
+    fftools/cmdutils.c
+    fftools/opt_common.c
+    fftools/objpool.c
+    fftools/sync_queue.c
+    fftools/thread_queue.c
+)
+
 # Include FFmpeg headers
 target_include_directories(fijkplayer_demuxer PRIVATE
     ${FFMPEG_INCLUDE_DIR}
@@ -130,6 +150,12 @@ target_include_directories(fijkplayer_ffmpeg_recorder PRIVATE
     ${FFMPEG_INCLUDE_DIR}
 )
 
+target_include_directories(fijkplayer_ffmpeg_kit PRIVATE
+    ${FFMPEG_INCLUDE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/fftools
+)
+
 # Find system libraries
 find_library(log-lib log)
 find_library(android-lib android)
@@ -151,6 +177,21 @@ set_target_properties(avcodec PROPERTIES
 add_library(avutil SHARED IMPORTED)
 set_target_properties(avutil PROPERTIES
     IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libavutil.so
+)
+
+add_library(swscale SHARED IMPORTED)
+set_target_properties(swscale PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libswscale.so
+)
+
+add_library(swresample SHARED IMPORTED)
+set_target_properties(swresample PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libswresample.so
+)
+
+add_library(avfilter SHARED IMPORTED)
+set_target_properties(avfilter PROPERTIES
+    IMPORTED_LOCATION ${FFMPEG_LIB_DIR}/libavfilter.so
 )
 
 # Link FFmpeg demuxer
@@ -231,6 +272,9 @@ target_link_libraries(fijkplayer_native_player
     avformat
     avcodec
     avutil
+    swscale
+    swresample
+    avfilter
 )
 
 # Link FFmpeg recorder
@@ -240,4 +284,19 @@ target_link_libraries(fijkplayer_ffmpeg_recorder
     avformat
     avcodec
     avutil
+    swscale
+    swresample
+    avfilter
+)
+
+# Link FFmpegKit command executor
+target_link_libraries(fijkplayer_ffmpeg_kit
+    ${log-lib}
+    ${android-lib}
+    avformat
+    avcodec
+    avutil
+    swscale
+    swresample
+    avfilter
 )

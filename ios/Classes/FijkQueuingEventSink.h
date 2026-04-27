@@ -20,7 +20,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+#import <TargetConditionals.h>
+#if TARGET_OS_IPHONE
 #import <Flutter/Flutter.h>
+#else
+#import <FlutterMacOS/FlutterMacOS.h>
+#endif
 #import <Foundation/Foundation.h>
 
 NS_ASSUME_NONNULL_BEGIN
