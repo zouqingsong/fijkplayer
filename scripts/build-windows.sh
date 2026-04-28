@@ -52,6 +52,14 @@ download_prebuilt() {
     cp "$EXTRACTED/lib/"*.dll.a "$FFMPEG_DIR/lib/" 2>/dev/null || true
     cp -r "$EXTRACTED/include/"* "$FFMPEG_DIR/include/"
     
+    # Copy config.h if present (needed by fftools sources)
+    if [ -f "$EXTRACTED/include/config.h" ]; then
+        cp "$EXTRACTED/include/config.h" "${PROJECT_ROOT}/windows/fftools/config.h"
+        echo "Copied config.h from pre-built package (overrides local stub)"
+    else
+        echo "Note: Using local fftools/config.h stub (pre-built package has no config.h)"
+    fi
+    
     echo "FFmpeg copied to: $FFMPEG_DIR"
     echo "DLLs:"
     ls -lh "$FFMPEG_DIR/bin/"*.dll
