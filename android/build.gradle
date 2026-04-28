@@ -40,9 +40,9 @@ android {
     defaultConfig {
         minSdk = 24
         
-        // Support both 64-bit (required by Google Play) and 32-bit ARM
+        // arm64-v8a only (armeabi-v7a FFmpeg not built)
         ndk { 
-            abiFilters 'arm64-v8a', 'armeabi-v7a'
+            abiFilters 'arm64-v8a'
             // Support 16KB page sizes for Android 15+
             // https://developer.android.com/guide/practices/page-sizes
             debugSymbolLevel 'SYMBOL_TABLE'
