@@ -28,7 +28,9 @@
 #define HAVE_KBHIT                      1
 #define HAVE_PEEKNAMEDPIPE              1
 #define HAVE_GETSTDHANDLE               1
-#define HAVE_COMMANDLINETOARGVW         1
+// Disabled: prepare_app_arguments replaces our FFmpeg arguments with the
+// host process command line via GetCommandLineW(), breaking in-process usage.
+#define HAVE_COMMANDLINETOARGVW         0
 #define HAVE_SETDLLDIRECTORY            1
 #define HAVE_GETMODULEHANDLE            1
 

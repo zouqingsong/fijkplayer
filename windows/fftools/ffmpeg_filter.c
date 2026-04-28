@@ -1844,7 +1844,7 @@ static int choose_out_timebase(OutputFilterPriv *ofp, AVFrame *frame)
     OutputFilter *ofilter = &ofp->ofilter;
     FPSConvContext   *fps = &ofp->fps;
     AVRational        tb = (AVRational){ 0, 0 };
-    AVRational fr;
+    AVRational        fr = (AVRational){ 0, 0 };
     FrameData *fd;
 
     fd = frame_data(frame);
