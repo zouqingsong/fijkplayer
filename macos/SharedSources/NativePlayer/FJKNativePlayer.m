@@ -7,6 +7,11 @@
 #include "ffmpeg_demuxer.h"
 #include "FJKAudioDecoder.h"
 #include "FJKAudioQueue.h"
+#include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
+#include <libavformat/avformat.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
 
 @interface FJKNativePlayer () {
     // Native C components
@@ -56,6 +61,12 @@
     
     // Synchronization
     NSLock *_stateLock;
+    
+    // Software decoder fallback (when VideoToolbox is unavailable, e.g. simulator)
+    AVCodecContext *_swDecoderCtx;
+    struct SwsContext *_swsCtx;
+    AVBSFContext *_bsfCtx;
+    BOOL _useSoftwareDecoder;
 }
 
 @end
@@ -80,6 +91,12 @@
         _audioStreamIndex = -1;
         _audioClock = 0.0;
         _lastVideoPts = -1;
+        
+        // Software decoder not used by default
+        _useSoftwareDecoder = NO;
+        _swDecoderCtx = NULL;
+        _swsCtx = NULL;
+        _bsfCtx = NULL;
         
         // Default playback configuration (VOD optimized)
         _playbackMode = 2;        // VOD_OPTIMIZED
@@ -328,7 +345,39 @@
 - (void)cleanup {
     NSLog(@"[FJKNativePlayer] Releasing resources");
     
-    [self stop];
+    // Set state to idle first to signal doPrepare to abort
+    [_stateLock lock];
+    _isPlaying = NO;
+    _state = FJKPlayerStateIdle;
+    [_stateLock unlock];
+    
+    // CRITICAL: Interrupt the demuxer to unblock any pending
+    // avformat_open_input or avformat_find_stream_info calls
+    if (_demuxer) {
+        ff_demuxer_interrupt(_demuxer);
+    }
+    
+    // Wait for any pending doPrepare to exit on the demuxer queue.
+    // The interrupt was set above, so FFmpeg should return quickly.
+    // Use dispatch_group_wait with timeout to avoid deadlock.
+    dispatch_group_t group = dispatch_group_create();
+    dispatch_group_enter(group);
+    dispatch_async(_demuxerQueue, ^{
+        NSLog(@"[FJKNativePlayer] Demuxer queue drained, safe to cleanup");
+        dispatch_group_leave(group);
+    });
+    // Wait up to 5 seconds for doPrepare to exit
+    dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
+    
+    // Also wait for the decoder queue to stop (runDecoderLoop checks _isPlaying)
+    dispatch_group_t decoderGroup = dispatch_group_create();
+    dispatch_group_enter(decoderGroup);
+    dispatch_async(_decoderQueue, ^{
+        NSLog(@"[FJKNativePlayer] Decoder queue drained");
+        dispatch_group_leave(decoderGroup);
+    });
+    // Wait indefinitely — demuxer interrupt ensures av_read_frame returns quickly
+    dispatch_group_wait(decoderGroup, DISPATCH_TIME_FOREVER);
     
     if (_decompressionSession) {
         VTDecompressionSessionInvalidate(_decompressionSession);
@@ -375,6 +424,19 @@
     
     _audioStreamIndex = -1;
     
+    // Cleanup software decoder
+    if (_bsfCtx) {
+        av_bsf_free(&_bsfCtx);
+    }
+    if (_swsCtx) {
+        sws_freeContext(_swsCtx);
+        _swsCtx = NULL;
+    }
+    if (_swDecoderCtx) {
+        avcodec_free_context(&_swDecoderCtx);
+    }
+    _useSoftwareDecoder = NO;
+    
     [_stateLock lock];
     _state = FJKPlayerStateIdle;
     [_stateLock unlock];
@@ -383,7 +445,13 @@
 #pragma mark - Private Implementation
 
 - (void)doPrepare {
-    NSLog(@"[FJKNativePlayer] Preparing...");
+    // Check if we were already cleaned up before starting
+    if (_state == FJKPlayerStateIdle || _state == FJKPlayerStateStopped) {
+        NSLog(@"[FJKNativePlayer] doPrepare aborted - player already reset");
+        return;
+    }
+    
+    NSLog(@"[FJKNativePlayer] Preparing with URL: %@", _dataSource);
     
     // Create FFmpeg demuxer
     _demuxer = ff_demuxer_create();
@@ -392,11 +460,19 @@
         return;
     }
     
-    // Open media file
+    // Open media file (this can block for RTSP connection)
+    NSLog(@"[FJKNativePlayer] Opening URL...");
     const char *url = [_dataSource UTF8String];
     int ret = ff_demuxer_open(_demuxer, url, NULL);
+    NSLog(@"[FJKNativePlayer] ff_demuxer_open returned: %d", ret);
     if (ret < 0) {
-        [self notifyError:[NSString stringWithFormat:@"Failed to open: %@", _dataSource]];
+        [self notifyError:[NSString stringWithFormat:@"Failed to open: %@ (error %d)", _dataSource, ret]];
+        return;
+    }
+    
+    // Check if we were interrupted during open
+    if (_state == FJKPlayerStateIdle || _state == FJKPlayerStateStopped) {
+        NSLog(@"[FJKNativePlayer] Prepare interrupted after open");
         return;
     }
     
@@ -433,11 +509,29 @@
           (int)_videoSize.width, (int)_videoSize.height, _videoFrameRate, 
           _isLiveStream ? @"YES" : @"NO", _duration);
     
-    // Create VideoToolbox decoder
+    // Create VideoToolbox decoder (try hardware first, fall back to software)
     ret = [self createVideoToolboxDecoder:videoStream];
     if (ret < 0) {
-        [self notifyError:@"Failed to create VideoToolbox decoder"];
-        return;
+        NSLog(@"[FJKNativePlayer] VideoToolbox failed, trying FFmpeg software decoder...");
+        ret = [self createSoftwareDecoder:videoStream];
+        if (ret < 0) {
+            [self notifyError:@"Failed to create video decoder (both HW and SW failed)"];
+            return;
+        }
+        _useSoftwareDecoder = YES;
+        
+        // Disable the internal parser in the format context
+        // to prevent av_read_frame from crashing in the codec parser.
+        // We handle parsing ourselves in the software decoder.
+        struct AVFormatContext *fmtCtx = ff_demuxer_get_format_context(_demuxer);
+        if (fmtCtx) {
+            fmtCtx->flags |= AVFMT_FLAG_NOFILLIN | AVFMT_FLAG_NOPARSE;
+            NSLog(@"[FJKNativePlayer] Disabled internal parser (NOPARSE|NOFILLIN)");
+        }
+        
+        NSLog(@"[FJKNativePlayer] ✅ Using FFmpeg software decoder");
+    } else {
+        _useSoftwareDecoder = NO;
     }
     
     // Create renderer
@@ -673,6 +767,195 @@
     return 0;
 }
 
+#pragma mark - Software Decoder (FFmpeg fallback)
+
+- (int)createSoftwareDecoder:(FFStream *)stream {
+    // Find the H.264 decoder
+    const AVCodec *codec = NULL;
+    if (stream->video_codec == FF_VIDEO_CODEC_H265) {
+        codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+    } else {
+        codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    }
+    
+    if (!codec) {
+        NSLog(@"[FJKNativePlayer] Software codec not found");
+        return -1;
+    }
+    
+    _swDecoderCtx = avcodec_alloc_context3(codec);
+    if (!_swDecoderCtx) {
+        NSLog(@"[FJKNativePlayer] Failed to allocate software decoder context");
+        return -1;
+    }
+    
+    // Copy codec parameters from the demuxer stream
+    struct AVFormatContext *fmtCtx = ff_demuxer_get_format_context(_demuxer);
+    int videoIdx = ff_demuxer_find_video_stream(_demuxer);
+    if (fmtCtx && videoIdx >= 0) {
+        avcodec_parameters_to_context(_swDecoderCtx, fmtCtx->streams[videoIdx]->codecpar);
+    }
+    
+    // Set decoder options - single-threaded for stability on simulator
+    _swDecoderCtx->thread_count = 1;
+    _swDecoderCtx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    _swDecoderCtx->flags2 |= AV_CODEC_FLAG2_FAST;
+    
+    int ret = avcodec_open2(_swDecoderCtx, codec, NULL);
+    if (ret < 0) {
+        NSLog(@"[FJKNativePlayer] Failed to open software decoder: %d", ret);
+        avcodec_free_context(&_swDecoderCtx);
+        return -1;
+    }
+    
+    // Create h264_mp4toannexb bitstream filter for AVCC -> Annex B conversion
+    const AVBitStreamFilter *bsf = av_bsf_get_by_name(
+        stream->video_codec == FF_VIDEO_CODEC_H265 ? "hevc_mp4toannexb" : "h264_mp4toannexb");
+    if (bsf) {
+        ret = av_bsf_alloc(bsf, &_bsfCtx);
+        if (ret >= 0 && fmtCtx && videoIdx >= 0) {
+            avcodec_parameters_copy(_bsfCtx->par_in, fmtCtx->streams[videoIdx]->codecpar);
+            ret = av_bsf_init(_bsfCtx);
+            if (ret < 0) {
+                NSLog(@"[FJKNativePlayer] BSF init failed: %d (non-fatal)", ret);
+                av_bsf_free(&_bsfCtx);
+            } else {
+                NSLog(@"[FJKNativePlayer] BSF filter initialized for Annex B conversion");
+            }
+        }
+    }
+    
+    NSLog(@"[FJKNativePlayer] Software decoder created: %dx%d, codec=%s",
+          _swDecoderCtx->width, _swDecoderCtx->height, codec->name);
+    return 0;
+}
+
+- (void)decodeSoftwarePacket:(FFPacket *)packet {
+    if (!_swDecoderCtx || !packet || !packet->data || packet->size <= 0) return;
+    
+    // Create AVPacket with proper buffer management
+    AVPacket *avpkt = av_packet_alloc();
+    if (!avpkt) return;
+    
+    // Use av_new_packet to properly allocate buffer (sets buf, data, size)
+    if (av_new_packet(avpkt, packet->size) < 0) {
+        av_packet_free(&avpkt);
+        return;
+    }
+    memcpy(avpkt->data, packet->data, packet->size);
+    avpkt->pts = packet->pts;
+    avpkt->dts = packet->dts;
+    
+    // Apply BSF filter if available (AVCC -> Annex B)
+    if (_bsfCtx) {
+        int bsfRet = av_bsf_send_packet(_bsfCtx, avpkt);
+        if (bsfRet < 0) {
+            av_packet_free(&avpkt);
+            return;
+        }
+        // Receive filtered packet (reuse avpkt)
+        bsfRet = av_bsf_receive_packet(_bsfCtx, avpkt);
+        if (bsfRet < 0) {
+            av_packet_free(&avpkt);
+            return;
+        }
+    }
+    
+    int ret = avcodec_send_packet(_swDecoderCtx, avpkt);
+    av_packet_free(&avpkt);
+    
+    if (ret < 0) {
+        static int errCount = 0;
+        if (errCount++ < 5) {
+            NSLog(@"[FJKNativePlayer] SW decode send error: %d", ret);
+        }
+        return;
+    }
+    
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) return;
+    
+    while (avcodec_receive_frame(_swDecoderCtx, frame) == 0) {
+        // Convert AVFrame to CVPixelBuffer
+        CVPixelBufferRef pixelBuffer = [self pixelBufferFromAVFrame:frame];
+        if (pixelBuffer) {
+            // Track decoded frame position (for stall detection)
+            _currentPosition++;
+            
+            // Deliver frame to renderer
+            [_renderer renderFrame:pixelBuffer];
+            
+            // Notify texture update
+            if (self.frameCallback) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    self.frameCallback();
+                });
+            }
+            
+            CVPixelBufferRelease(pixelBuffer);
+        }
+    }
+    
+    av_frame_free(&frame);
+}
+
+- (CVPixelBufferRef)pixelBufferFromAVFrame:(AVFrame *)frame {
+    int width = frame->width;
+    int height = frame->height;
+    
+    // Create CVPixelBuffer
+    CVPixelBufferRef pixelBuffer = NULL;
+    NSDictionary *attrs = @{
+        (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
+    };
+    
+    CVReturn cvRet = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        width, height,
+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, // NV12
+        (__bridge CFDictionaryRef)attrs,
+        &pixelBuffer
+    );
+    
+    if (cvRet != kCVReturnSuccess || !pixelBuffer) {
+        return NULL;
+    }
+    
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    
+    // Frame is YUV420P (3 planes) -> convert to NV12 (2 planes: Y + interleaved UV)
+    // Y plane - direct copy
+    uint8_t *yDst = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+    size_t yDstStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0);
+    
+    for (int row = 0; row < height; row++) {
+        memcpy(yDst + row * yDstStride,
+               frame->data[0] + row * frame->linesize[0],
+               width);
+    }
+    
+    // UV plane - interleave U and V
+    uint8_t *uvDst = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+    size_t uvDstStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1);
+    int uvHeight = height / 2;
+    int uvWidth = width / 2;
+    
+    for (int row = 0; row < uvHeight; row++) {
+        uint8_t *uSrc = frame->data[1] + row * frame->linesize[1];
+        uint8_t *vSrc = frame->data[2] + row * frame->linesize[2];
+        uint8_t *dst = uvDst + row * uvDstStride;
+        
+        for (int col = 0; col < uvWidth; col++) {
+            dst[col * 2]     = uSrc[col];
+            dst[col * 2 + 1] = vSrc[col];
+        }
+    }
+    
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    
+    return pixelBuffer;
+}
+
 // VideoToolbox callback
 static void decompressionOutputCallback(
     void *decompressionOutputRefCon,
@@ -745,20 +1028,29 @@ static void decompressionOutputCallback(
 
 - (void)runDecoderLoop {
     NSLog(@"[FJKNativePlayer] Decoder loop started");
+    int consecutiveErrors = 0;
     
-    while (_isPlaying) {
+    while (_isPlaying && _demuxer) {
         @autoreleasepool {
+            // Safety: re-check after autoreleasepool setup
+            if (!_isPlaying || !_demuxer) break;
+            
             // Read packet
             FFPacket *packet = NULL;
             int ret = ff_demuxer_read_packet(_demuxer, &packet); // Returns 0 on success
             
             if (ret == 0 && packet) {
+                consecutiveErrors = 0; // Reset on success
                 int video_stream_index = ff_demuxer_find_video_stream(_demuxer);
                 
                 // Route packet to appropriate decoder
                 if (packet->stream_index == video_stream_index) {
-                    // Video packet - decode with VideoToolbox
-                    [self decodePacket:packet];
+                    // Video packet - decode with appropriate decoder
+                    if (_useSoftwareDecoder) {
+                        [self decodeSoftwarePacket:packet];
+                    } else {
+                        [self decodePacket:packet];
+                    }
                     
                     // Adaptive timing based on stream type
                     if (_isLiveStream) {
@@ -784,13 +1076,20 @@ static void decompressionOutputCallback(
                 // No packet available, wait a bit
                 usleep(1000);
             } else if (ret < 0) {
-                NSLog(@"[FJKNativePlayer] Read error: %d", ret);
+                consecutiveErrors++;
+                NSLog(@"[FJKNativePlayer] Read error: %d (consecutive: %d)", ret, consecutiveErrors);
+                
+                // For live streams, retry on transient errors instead of exiting
+                if (_isLiveStream && _isPlaying && consecutiveErrors < 50) {
+                    usleep(100000); // 100ms backoff before retry
+                    continue;
+                }
                 break;
             }
         }
     }
     
-    NSLog(@"[FJKNativePlayer] Decoder loop exited");
+    NSLog(@"[FJKNativePlayer] Decoder loop exited (isPlaying=%d)", _isPlaying);
 }
 
 #pragma mark - Audio Decoder & Playback (Phase 3)
@@ -963,6 +1262,13 @@ static void decompressionOutputCallback(
     [_stateLock lock];
     _state = FJKPlayerStateError;
     [_stateLock unlock];
+    
+    // Forward error message to Flutter via callback
+    if (self.errorMessageCallback) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.errorMessageCallback(message);
+        });
+    }
     
     [self notifyEvent:FJKPlayerEventError arg1:-1 arg2:0];
 }

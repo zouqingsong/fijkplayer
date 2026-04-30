@@ -147,7 +147,7 @@ static int interrupt_callback(void* ctx) {
         return 1;
     }
     
-    // Check for timeout (30 seconds)
+    // Check for timeout (30 seconds for RTSP connections over internet)
     int64_t now = av_gettime();
     if (demuxer->last_operation_time > 0 && 
         (now - demuxer->last_operation_time) > 30000000) {
@@ -229,7 +229,7 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
         }
     } else {
         // Default options - apply based on protocol
-        av_dict_set(&opts, "timeout", "10000000", 0); // 10 seconds timeout for network
+        av_dict_set(&opts, "timeout", "30000000", 0); // 30 seconds timeout for network
         
         // Check if URL is HTTP/HTTPS
         if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0) {
@@ -242,6 +242,7 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
             // RTSP-specific options
             av_dict_set(&opts, "rtsp_transport", "tcp", 0);
             av_dict_set(&opts, "fflags", "nobuffer", 0);
+            av_dict_set(&opts, "stimeout", "10000000", 0); // 10 second socket timeout
         }
     }
     
@@ -293,6 +294,7 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
     demuxer->use_async_io = false;  // Never use async I/O
     
     // Standard open - let FFmpeg choose the right protocol
+    LOGI("Calling avformat_open_input for: %s", url);
     ret = avformat_open_input(&demuxer->format_ctx, url, NULL, &opts);
     
     // Log any remaining options (indicates unsupported options)
@@ -321,6 +323,9 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
     // 3. Reasonable probesize (32KB-64KB range works best)
     // 4. Use interrupt_callback for timeout prevention
     // Reference: ff_ffplay.c line 3185, ijklivehook.c line 148
+    
+    // Reset timeout for find_stream_info (give it a fresh timeout window)
+    demuxer->last_operation_time = av_gettime();
     
     // CRITICAL: Set fps_probe_size to 0 BEFORE calling avformat_find_stream_info
     // This prevents FFmpeg from reading many packets to calculate FPS
@@ -922,4 +927,10 @@ int ff_demuxer_reopen(FFDemuxer* demuxer) {
     demuxer->is_active = true;
     
     return 0;
+}
+
+/* Get the underlying AVFormatContext */
+AVFormatContext* ff_demuxer_get_format_context(FFDemuxer* demuxer) {
+    if (!demuxer) return NULL;
+    return demuxer->format_ctx;
 }

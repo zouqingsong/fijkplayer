@@ -95,6 +95,8 @@
     int ret;
     AVPacket pkt;
     int64_t startPts = -1;
+    int64_t startDts = -1;
+    BOOL gotKeyframe = NO;
     
     NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@", _rtspUrl, _outputPath);
     
@@ -135,7 +137,8 @@
         return;
     }
     
-    NSLog(@"[FFmpegRecorder] Found video stream at index %d", _videoStreamIndex);
+    NSLog(@"[FFmpegRecorder] Found video stream at index %d, codec_id=%d", 
+          _videoStreamIndex, _inputContext->streams[_videoStreamIndex]->codecpar->codec_id);
     
     // Create output context (MP4 file)
     ret = avformat_alloc_output_context2(&_outputContext, NULL, "mp4", [_outputPath UTF8String]);
@@ -163,7 +166,6 @@
     }
     
     outStream->codecpar->codec_tag = 0;
-    outStream->time_base = inStream->time_base;
     
     // Open output file
     if (!(_outputContext->oformat->flags & AVFMT_NOFILE)) {
@@ -175,15 +177,20 @@
         }
     }
     
+    // Set faststart for proper MP4 playback
+    AVDictionary *muxerOpts = NULL;
+    av_dict_set(&muxerOpts, "movflags", "faststart", 0);
+    
     // Write header
-    ret = avformat_write_header(_outputContext, NULL);
+    ret = avformat_write_header(_outputContext, &muxerOpts);
+    av_dict_free(&muxerOpts);
     if (ret < 0) {
         NSLog(@"[FFmpegRecorder] Failed to write header: %s", av_err2str(ret));
         [self cleanup];
         return;
     }
     
-    NSLog(@"[FFmpegRecorder] Header written successfully, starting recording loop");
+    NSLog(@"[FFmpegRecorder] Header written successfully, waiting for keyframe...");
     
     // Recording loop
     while (!_stopRequested) {
@@ -199,22 +206,33 @@
         
         // Only process video packets
         if (pkt.stream_index == _videoStreamIndex) {
-            AVStream *inStream = _inputContext->streams[_videoStreamIndex];
-            AVStream *outStream = _outputContext->streams[0];
-            
-            // Initialize start PTS
-            if (startPts == -1) {
-                startPts = pkt.pts;
+            // Wait for first keyframe before writing any packets
+            if (!gotKeyframe) {
+                if (pkt.flags & AV_PKT_FLAG_KEY) {
+                    gotKeyframe = YES;
+                    startPts = pkt.pts;
+                    startDts = pkt.dts;
+                    NSLog(@"[FFmpegRecorder] Got first keyframe, starting recording");
+                } else {
+                    av_packet_unref(&pkt);
+                    continue;
+                }
             }
             
-            // Adjust timestamps
-            pkt.pts = av_rescale_q_rnd(pkt.pts - startPts, inStream->time_base, 
-                                       outStream->time_base, 
+            AVStream *inStr = _inputContext->streams[_videoStreamIndex];
+            AVStream *outStr = _outputContext->streams[0];
+            
+            // Adjust timestamps relative to first keyframe
+            pkt.pts = av_rescale_q_rnd(pkt.pts - startPts, inStr->time_base, 
+                                       outStr->time_base, 
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            pkt.dts = av_rescale_q_rnd(pkt.dts - startPts, inStream->time_base, 
-                                       outStream->time_base, 
+            pkt.dts = av_rescale_q_rnd(pkt.dts - startDts, inStr->time_base, 
+                                       outStr->time_base, 
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            pkt.duration = av_rescale_q(pkt.duration, inStream->time_base, outStream->time_base);
+            if (pkt.pts < pkt.dts) {
+                pkt.pts = pkt.dts;
+            }
+            pkt.duration = av_rescale_q(pkt.duration, inStr->time_base, outStr->time_base);
             pkt.stream_index = 0;
             pkt.pos = -1;
             

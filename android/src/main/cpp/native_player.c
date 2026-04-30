@@ -94,6 +94,15 @@ struct NativePlayer {
     
     // Surface
     ANativeWindow* native_window;
+    
+    // Snapshot: retain last decoded frame
+    uint8_t* last_frame_data[3];   // Y, U, V planes
+    int last_frame_linesize[3];
+    int last_frame_width;
+    int last_frame_height;
+    FrameFormat last_frame_format;
+    pthread_mutex_t snapshot_mutex;
+    bool has_snapshot_frame;
 };
 
 // Forward declarations
@@ -125,6 +134,8 @@ NativePlayer* native_player_create(JNIEnv* env, jobject thiz) {
     player->state = PLAYER_STATE_IDLE;
     pthread_mutex_init(&player->state_mutex, NULL);
     pthread_mutex_init(&player->clock_mutex, NULL);
+    pthread_mutex_init(&player->snapshot_mutex, NULL);
+    player->has_snapshot_frame = false;
     
     // Initialize A/V sync
     player->frame_timer = 0.0;
@@ -924,6 +935,48 @@ int native_player_render_frame(NativePlayer* player) {
     // Update stats
     player->stats.frames_rendered++;
     
+    // Save a copy of the frame data for snapshot
+    pthread_mutex_lock(&player->snapshot_mutex);
+    {
+        int w = frame->width;
+        int h = frame->height;
+        // Reallocate if size changed
+        if (w != player->last_frame_width || h != player->last_frame_height || 
+            frame->format != player->last_frame_format) {
+            for (int i = 0; i < 3; i++) {
+                free(player->last_frame_data[i]);
+                player->last_frame_data[i] = NULL;
+            }
+            player->last_frame_width = w;
+            player->last_frame_height = h;
+            player->last_frame_format = frame->format;
+            player->has_snapshot_frame = false;
+        }
+        // Copy Y plane
+        if (frame->data[0]) {
+            size_t y_size = (size_t)frame->linesize[0] * h;
+            if (!player->last_frame_data[0]) player->last_frame_data[0] = (uint8_t*)malloc(y_size);
+            if (player->last_frame_data[0]) {
+                memcpy(player->last_frame_data[0], frame->data[0], y_size);
+                player->last_frame_linesize[0] = frame->linesize[0];
+            }
+        }
+        // Copy U and V planes
+        int uv_h = h / 2;
+        for (int i = 1; i < 3; i++) {
+            if (frame->data[i] && frame->linesize[i] > 0) {
+                size_t uv_size = (size_t)frame->linesize[i] * uv_h;
+                if (!player->last_frame_data[i]) player->last_frame_data[i] = (uint8_t*)malloc(uv_size);
+                if (player->last_frame_data[i]) {
+                    memcpy(player->last_frame_data[i], frame->data[i], uv_size);
+                    player->last_frame_linesize[i] = frame->linesize[i];
+                }
+            }
+        }
+        player->has_snapshot_frame = true;
+    }
+    pthread_mutex_unlock(&player->snapshot_mutex);
+    
     // Free frame
     frame_queue_free_frame(player->frame_queue, frame);
     
@@ -1020,11 +1073,113 @@ void native_player_release(NativePlayer* player) {
     packet_queue_destroy(&player->videoq);
     packet_queue_destroy(&player->audioq);
     
+    // Free snapshot frame data
+    for (int i = 0; i < 3; i++) {
+        free(player->last_frame_data[i]);
+    }
+    pthread_mutex_destroy(&player->snapshot_mutex);
+    
     pthread_mutex_destroy(&player->state_mutex);
     
     free(player);
     
     LOGD("Player released");
+}
+
+// Clamp helper for YUV→RGBA conversion
+static inline uint8_t clamp_u8(int val) {
+    if (val < 0) return 0;
+    if (val > 255) return 255;
+    return (uint8_t)val;
+}
+
+int native_player_snapshot(NativePlayer* player, uint8_t** out_data, int* out_width, int* out_height) {
+    if (!player || !out_data || !out_width || !out_height) return -1;
+    
+    pthread_mutex_lock(&player->snapshot_mutex);
+    
+    if (!player->has_snapshot_frame || !player->last_frame_data[0]) {
+        pthread_mutex_unlock(&player->snapshot_mutex);
+        LOGE("No frame available for snapshot");
+        return -1;
+    }
+    
+    int w = player->last_frame_width;
+    int h = player->last_frame_height;
+    size_t rgba_size = (size_t)w * h * 4;
+    uint8_t* rgba = (uint8_t*)malloc(rgba_size);
+    if (!rgba) {
+        pthread_mutex_unlock(&player->snapshot_mutex);
+        LOGE("Failed to allocate RGBA buffer for snapshot");
+        return -1;
+    }
+    
+    uint8_t* y_plane = player->last_frame_data[0];
+    int y_stride = player->last_frame_linesize[0];
+    
+    if (player->last_frame_format == FRAME_FORMAT_YUV420P) {
+        // YUV420P: separate U and V planes
+        uint8_t* u_plane = player->last_frame_data[1];
+        uint8_t* v_plane = player->last_frame_data[2];
+        int u_stride = player->last_frame_linesize[1];
+        int v_stride = player->last_frame_linesize[2];
+        
+        for (int row = 0; row < h; row++) {
+            for (int col = 0; col < w; col++) {
+                int y_val = y_plane[row * y_stride + col];
+                int u_val = u_plane[(row/2) * u_stride + (col/2)] - 128;
+                int v_val = v_plane[(row/2) * v_stride + (col/2)] - 128;
+                
+                int r = y_val + (int)(1.402f * v_val);
+                int g = y_val - (int)(0.344f * u_val) - (int)(0.714f * v_val);
+                int b = y_val + (int)(1.772f * u_val);
+                
+                int idx = (row * w + col) * 4;
+                rgba[idx]     = clamp_u8(r);
+                rgba[idx + 1] = clamp_u8(g);
+                rgba[idx + 2] = clamp_u8(b);
+                rgba[idx + 3] = 255;
+            }
+        }
+    } else {
+        // NV12 or NV21: interleaved UV plane
+        uint8_t* uv_plane = player->last_frame_data[1];
+        int uv_stride = player->last_frame_linesize[1];
+        bool is_nv21 = (player->last_frame_format == FRAME_FORMAT_NV21);
+        
+        for (int row = 0; row < h; row++) {
+            for (int col = 0; col < w; col++) {
+                int y_val = y_plane[row * y_stride + col];
+                int uv_idx = (row/2) * uv_stride + (col/2) * 2;
+                int u_val, v_val;
+                if (is_nv21) {
+                    v_val = uv_plane[uv_idx] - 128;
+                    u_val = uv_plane[uv_idx + 1] - 128;
+                } else {
+                    u_val = uv_plane[uv_idx] - 128;
+                    v_val = uv_plane[uv_idx + 1] - 128;
+                }
+                
+                int r = y_val + (int)(1.402f * v_val);
+                int g = y_val - (int)(0.344f * u_val) - (int)(0.714f * v_val);
+                int b = y_val + (int)(1.772f * u_val);
+                
+                int idx = (row * w + col) * 4;
+                rgba[idx]     = clamp_u8(r);
+                rgba[idx + 1] = clamp_u8(g);
+                rgba[idx + 2] = clamp_u8(b);
+                rgba[idx + 3] = 255;
+            }
+        }
+    }
+    
+    pthread_mutex_unlock(&player->snapshot_mutex);
+    
+    *out_data = rgba;
+    *out_width = w;
+    *out_height = h;
+    LOGD("Snapshot captured: %dx%d (%zu bytes)", w, h, rgba_size);
+    return (int)rgba_size;
 }
 
 // Audio playback thread - reads from queue and writes to AudioTrack

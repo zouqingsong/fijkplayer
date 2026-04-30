@@ -242,13 +242,18 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   void _startPosTimer() {
     _posTimer?.cancel();
     // Timer serves two purposes:
-    // 1. Update position stream for monitoring (e.g., frame detection in MicVision)
+    // 1. Update position stream with actual player position
     // 2. Call notifyListeners() to trigger FijkView texture rebuilds (critical for smooth playback)
-    // Note: State change listeners won't fire because state hasn't changed (_setValue checks)
-    _posTimer = Timer.periodic(Duration(milliseconds: 200), (timer) {
+    _posTimer = Timer.periodic(Duration(milliseconds: 200), (timer) async {
       if (state == FijkState.started) {
-        // Update position stream
-        _currentPosController.add(DateTime.now().difference(DateTime(0)));
+        // Query actual position from native player
+        try {
+          int pos = await _channel.invokeMethod("getCurrentPosition") ?? 0;
+          _currentPos = Duration(milliseconds: pos);
+          if (!_seeking) {
+            _currentPosController.add(_currentPos);
+          }
+        } catch (_) {}
         // Trigger FijkView updates for texture rendering
         notifyListeners();
       }

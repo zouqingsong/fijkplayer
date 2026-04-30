@@ -1,6 +1,8 @@
 package com.befovy.fijkplayer;
 
+import android.graphics.Bitmap;
 import android.view.Surface;
+import java.io.ByteArrayOutputStream;
 
 /**
  * Native Player - Java wrapper for the unified C player
@@ -357,4 +359,35 @@ public class FJKNativePlayer {
     private native void nativeRenderFrame(long handle);
     private native void nativeSetVolume(long handle, float volume);
     private native void nativeRelease(long handle);
+    private native byte[] nativeSnapshot(long handle, int[] outDims);
+
+    /**
+     * Capture a snapshot of the current video frame as PNG bytes.
+     * @return PNG byte array, or null if no frame is available.
+     */
+    public byte[] snapshot() {
+        if (mNativeHandle == 0) return null;
+        int[] dims = new int[2];
+        byte[] rgba = nativeSnapshot(mNativeHandle, dims);
+        if (rgba == null || dims[0] <= 0 || dims[1] <= 0) return null;
+        
+        int width = dims[0];
+        int height = dims[1];
+        
+        // Convert RGBA byte array to ARGB int array for Bitmap
+        int[] pixels = new int[width * height];
+        for (int i = 0; i < pixels.length; i++) {
+            int r = rgba[i * 4] & 0xFF;
+            int g = rgba[i * 4 + 1] & 0xFF;
+            int b = rgba[i * 4 + 2] & 0xFF;
+            int a = rgba[i * 4 + 3] & 0xFF;
+            pixels[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+        
+        Bitmap bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888);
+        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+        bitmap.compress(Bitmap.CompressFormat.PNG, 100, baos);
+        bitmap.recycle();
+        return baos.toByteArray();
+    }
 }

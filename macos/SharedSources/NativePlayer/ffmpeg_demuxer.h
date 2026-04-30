@@ -221,6 +221,12 @@ void ff_demuxer_interrupt(FFDemuxer* demuxer);
  */
 int ff_demuxer_reopen(FFDemuxer* demuxer);
 
+/*
+ * Get the underlying AVFormatContext (for software decoder setup)
+ * Returns NULL if demuxer is not open
+ */
+struct AVFormatContext* ff_demuxer_get_format_context(FFDemuxer* demuxer);
+
 #ifdef __cplusplus
 }
 #endif

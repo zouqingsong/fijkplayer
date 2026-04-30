@@ -421,6 +421,23 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             }
             break;
         }
+        case "snapshot": {
+            try {
+                byte[] pngData = instance.player.snapshot();
+                if (pngData != null) {
+                    java.util.Map<String, Object> args = new java.util.HashMap<>();
+                    args.put("data", pngData);
+                    instance.methodChannel.invokeMethod("_onSnapshot", args);
+                    result.success(null);
+                } else {
+                    result.error("SNAPSHOT_FAILED", "No frame available", null);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Snapshot failed", e);
+                result.error("SNAPSHOT_FAILED", e.getMessage(), null);
+            }
+            break;
+        }
         default:
             // Check for recording methods before returning notImplemented
             if (handleRecordingMethod(instance, call, result)) {
@@ -984,6 +1001,14 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             switch (eventType) {
             case FJKNativePlayer.EVENT_PREPARED:
                 sendStateChange(STATE_PREPARED);
+                // Send 'prepared' event with duration so Dart side gets the duration value
+                if (eventSink != null) {
+                    long durationMs = player.getDuration();
+                    Map<String, Object> preparedEvent = new HashMap<>();
+                    preparedEvent.put("event", "prepared");
+                    preparedEvent.put("duration", (int)durationMs);
+                    eventSink.success(preparedEvent);
+                }
                 break;
             case FJKNativePlayer.EVENT_STARTED:
                 sendStateChange(STATE_STARTED);

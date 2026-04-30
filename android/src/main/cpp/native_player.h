@@ -328,6 +328,17 @@ int native_player_set_volume(NativePlayer* player, float volume);
  */
 void native_player_release(NativePlayer* player);
 
+/**
+ * Capture a snapshot of the last rendered video frame as RGBA data
+ * 
+ * @param player Player handle
+ * @param out_data Output pointer to RGBA data (caller must free with free())
+ * @param out_width Output video width
+ * @param out_height Output video height
+ * @return Size of RGBA data in bytes, or -1 on error
+ */
+int native_player_snapshot(NativePlayer* player, uint8_t** out_data, int* out_width, int* out_height);
+
 #ifdef __cplusplus
 }
 #endif

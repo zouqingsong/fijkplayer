@@ -14,6 +14,8 @@
 
 #import <FlutterMacOS/FlutterMacOS.h>
 #import <Foundation/Foundation.h>
+#import <CoreImage/CoreImage.h>
+#import <ImageIO/ImageIO.h>
 #import <libkern/OSAtomic.h>
 #import <stdatomic.h>
 
@@ -189,6 +191,15 @@ static const int end = 9;
             if (_nativePlayer.videoSize.width > 0) {
                 _width = (int)_nativePlayer.videoSize.width;
                 _height = (int)_nativePlayer.videoSize.height;
+            }
+            // Send 'prepared' event with duration so Dart side gets the duration value
+            {
+                NSInteger durationMs = (NSInteger)(_nativePlayer.duration);
+                NSDictionary *preparedEvent = @{
+                    @"event": @"prepared",
+                    @"duration": @(durationMs)
+                };
+                [_eventSink success:preparedEvent];
             }
             break;
             
@@ -453,6 +464,44 @@ static const int end = 9;
     } else if ([@"release" isEqualToString:call.method]) {
         [self shutdown];
         result(@(0));
+        
+    } else if ([@"snapshot" isEqualToString:call.method]) {
+        CVPixelBufferRef pixelBuffer = [_nativePlayer copyPixelBuffer];
+        if (!pixelBuffer) {
+            [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": [NSNull null]}];
+            result(nil);
+            return;
+        }
+        
+        CIImage *ciImage = [CIImage imageWithCVPixelBuffer:pixelBuffer];
+        CIContext *context = [CIContext context];
+        CGImageRef cgImage = [context createCGImage:ciImage fromRect:ciImage.extent];
+        CVPixelBufferRelease(pixelBuffer);
+        
+        if (!cgImage) {
+            [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": [NSNull null]}];
+            result(nil);
+            return;
+        }
+        
+        NSMutableData *pngData = [NSMutableData data];
+        CGImageDestinationRef dest = CGImageDestinationCreateWithData(
+            (__bridge CFMutableDataRef)pngData, kUTTypePNG, 1, NULL);
+        if (dest) {
+            CGImageDestinationAddImage(dest, cgImage, nil);
+            CGImageDestinationFinalize(dest);
+            CFRelease(dest);
+        }
+        CGImageRelease(cgImage);
+        
+        if (pngData.length > 0) {
+            FlutterStandardTypedData *typedData =
+                [FlutterStandardTypedData typedDataWithBytes:pngData];
+            [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": typedData}];
+        } else {
+            [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": [NSNull null]}];
+        }
+        result(nil);
         
     } else {
         result(FlutterMethodNotImplemented);

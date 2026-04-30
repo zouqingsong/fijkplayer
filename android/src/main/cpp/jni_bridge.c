@@ -268,6 +268,32 @@ JNI_METHOD(nativeRelease)(JNIEnv* env, jobject thiz, jlong handle) {
     native_player_release(player);
 }
 
+JNIEXPORT jbyteArray JNICALL
+JNI_METHOD(nativeSnapshot)(JNIEnv* env, jobject thiz, jlong handle, jintArray outDims) {
+    NativePlayer* player = (NativePlayer*)handle;
+    if (!player) return NULL;
+    
+    uint8_t* rgba_data = NULL;
+    int width = 0, height = 0;
+    int size = native_player_snapshot(player, &rgba_data, &width, &height);
+    if (size <= 0 || !rgba_data) {
+        return NULL;
+    }
+    
+    // Set output dimensions [width, height]
+    jint dims[2] = { width, height };
+    (*env)->SetIntArrayRegion(env, outDims, 0, 2, dims);
+    
+    // Create Java byte array with RGBA data
+    jbyteArray result = (*env)->NewByteArray(env, size);
+    if (result) {
+        (*env)->SetByteArrayRegion(env, result, 0, size, (jbyte*)rgba_data);
+    }
+    
+    free(rgba_data);
+    return result;
+}
+
 // JNI_OnLoad - called when library is loaded
 JNIEXPORT jint JNICALL
 JNI_OnLoad(JavaVM* vm, void* reserved) {
