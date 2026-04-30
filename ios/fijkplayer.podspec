@@ -14,7 +14,7 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   s.author           = { 'zouqingsong' => 'zouqingsong@gmail.com' }
   s.source           = { :path => '.' }
   s.source_files = 'Classes/**/*', 'NativePlayer/**/*.{h,m,c}', 'FFmpegKit/**/*.{h,c}'
-  s.public_header_files = 'Classes/**/*.h', 'NativePlayer/**/*.h'
+  s.public_header_files = 'Classes/FijkPlugin.h'
 
   s.static_framework = true
   
@@ -38,6 +38,7 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   
   # Configure for both device and simulator
   s.pod_target_xcconfig = {
+    'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386 x86_64',
     'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64"',
     'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64-simulator"',

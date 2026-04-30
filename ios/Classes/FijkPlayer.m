@@ -106,6 +106,18 @@ static const int end = 9;
                 [strongSelf->_textureRegistry textureFrameAvailable:strongSelf->_vid];
             }
         };
+        
+        // Set up error message callback to forward native errors to Flutter log
+        _nativePlayer.errorMessageCallback = ^(NSString *message) {
+            typeof(self) strongSelf = weakSelf;
+            if (strongSelf && strongSelf->_eventSink) {
+                NSDictionary *event = @{
+                    @"event": @"native_error",
+                    @"message": message ?: @"Unknown native error"
+                };
+                [strongSelf->_eventSink success:event];
+            }
+        };
 
         // Setup method channel
         _methodChannel = [FlutterMethodChannel

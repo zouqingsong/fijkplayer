@@ -74,6 +74,9 @@ typedef void (^FJKPlayerFrameCallback)(void);
 /// Frame callback (called when new frame is available)
 @property (nonatomic, copy, nullable) FJKPlayerFrameCallback frameCallback;
 
+/// Error message callback (sends native error strings to Flutter)
+@property (nonatomic, copy, nullable) void (^errorMessageCallback)(NSString *message);
+
 /**
  * Initialize player
  */

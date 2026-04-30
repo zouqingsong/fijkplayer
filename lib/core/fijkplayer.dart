@@ -92,6 +92,23 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// return the current playing position
   Duration get currentPos => _currentPos;
 
+  /// Query native player for actual current position.
+  /// Unlike [currentPos], this queries the native side directly.
+  /// Useful for detecting frame stalls (position stops changing when no frames are decoded).
+  /// Returns -1 if the player is not in a playable state (e.g. after reset).
+  Future<int> getCurrentPos() async {
+    if (state == FijkState.idle || state == FijkState.end) {
+      return -1;
+    }
+    await _nativeSetup.future;
+    try {
+      int pos = await _channel.invokeMethod("getCurrentPosition") ?? 0;
+      return pos;
+    } on MissingPluginException {
+      return -1;
+    }
+  }
+
   final StreamController<Duration> _currentPosController =
       StreamController.broadcast();
 
@@ -803,6 +820,14 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
         break;
       case 'seek_complete':
         _seeking = false;
+        break;
+      case 'native_error':
+        String msg = map['message'] ?? 'Unknown native error';
+        FijkLog.e("$this NATIVE ERROR: $msg");
+        break;
+      case 'error':
+        String msg = map['message']?.toString() ?? 'Unknown error';
+        FijkLog.e("$this error event: code=${map['code']}, message=$msg");
         break;
       default:
         break;
