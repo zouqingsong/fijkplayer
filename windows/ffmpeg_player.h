@@ -77,6 +77,11 @@ FFPlayerState ffplayer_get_state(FFmpegPlayer *player);
 const char *ffplayer_get_data_source(FFmpegPlayer *player);
 bool ffplayer_is_playing(FFmpegPlayer *player);
 
+// Snapshot: encode current frame as PNG.
+// Returns allocated PNG buffer (caller must free) and sets *out_size.
+// Returns NULL if no frame is available.
+uint8_t *ffplayer_snapshot_png(FFmpegPlayer *player, int *out_size);
+
 #ifdef __cplusplus
 }
 #endif

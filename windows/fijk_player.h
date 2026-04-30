@@ -11,6 +11,8 @@
 #include <flutter/texture_registrar.h>
 #include <memory>
 #include <string>
+#include <thread>
+#include <atomic>
 
 extern "C" {
 #include "ffmpeg_player.h"
@@ -48,6 +50,11 @@ private:
     flutter::EventSink<flutter::EncodableValue>* event_sink_ = nullptr;
 
     std::string data_source_;
+
+    // Recording state
+    std::atomic<bool> is_recording_{false};
+    std::thread recording_thread_;
+    std::string recording_path_;
 };
 
 #endif // FIJK_PLAYER_H

@@ -443,3 +443,68 @@ int64_t ffplayer_get_current_position(FFmpegPlayer *p) { return p ? p->current_p
 FFPlayerState ffplayer_get_state(FFmpegPlayer *p) { return p ? p->state : FFPLAYER_STATE_IDLE; }
 const char *ffplayer_get_data_source(FFmpegPlayer *p) { return p ? p->url : NULL; }
 bool ffplayer_is_playing(FFmpegPlayer *p) { return p && p->state == FFPLAYER_STATE_PLAYING; }
+
+uint8_t *ffplayer_snapshot_png(FFmpegPlayer *p, int *out_size) {
+    if (!p || !p->rgba_buffer || p->video_width <= 0 || p->video_height <= 0) return NULL;
+    if (out_size) *out_size = 0;
+    
+    int width = p->video_width;
+    int height = p->video_height;
+    
+    // Find PNG encoder
+    const AVCodec *png_codec = avcodec_find_encoder(AV_CODEC_ID_PNG);
+    if (!png_codec) return NULL;
+    
+    AVCodecContext *enc_ctx = avcodec_alloc_context3(png_codec);
+    if (!enc_ctx) return NULL;
+    
+    enc_ctx->width = width;
+    enc_ctx->height = height;
+    enc_ctx->pix_fmt = AV_PIX_FMT_RGBA;
+    enc_ctx->time_base = (AVRational){1, 1};
+    
+    int ret = avcodec_open2(enc_ctx, png_codec, NULL);
+    if (ret < 0) {
+        avcodec_free_context(&enc_ctx);
+        return NULL;
+    }
+    
+    // Create frame from current RGBA buffer
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) {
+        avcodec_free_context(&enc_ctx);
+        return NULL;
+    }
+    
+    frame->format = AV_PIX_FMT_RGBA;
+    frame->width = width;
+    frame->height = height;
+    frame->data[0] = p->rgba_buffer;
+    frame->linesize[0] = width * 4;
+    frame->pts = 0;
+    
+    // Encode
+    AVPacket *pkt = av_packet_alloc();
+    uint8_t *result = NULL;
+    
+    ret = avcodec_send_frame(enc_ctx, frame);
+    if (ret >= 0) {
+        ret = avcodec_receive_packet(enc_ctx, pkt);
+        if (ret >= 0) {
+            // Copy PNG data
+            result = (uint8_t *)malloc(pkt->size);
+            if (result) {
+                memcpy(result, pkt->data, pkt->size);
+                if (out_size) *out_size = pkt->size;
+            }
+        }
+    }
+    
+    av_packet_free(&pkt);
+    // Don't free frame data - it points to p->rgba_buffer which is owned by the player
+    frame->data[0] = NULL;
+    av_frame_free(&frame);
+    avcodec_free_context(&enc_ctx);
+    
+    return result;
+}
