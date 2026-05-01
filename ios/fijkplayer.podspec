@@ -62,14 +62,5 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   
   # System frameworks needed for native player
   s.frameworks = 'VideoToolbox', 'CoreVideo', 'CoreMedia', 'CoreFoundation', 'AudioToolbox', 'AVFoundation', 'Accelerate'
-  
-  # Script phase to copy FFmpeg dylibs to app bundle
-  s.script_phases = [
-    {
-      :name => 'Copy FFmpeg Libraries',
-      :script => 'set -e; if [ "${PLATFORM_NAME}" = "iphoneos" ]; then LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib/arm64"; else LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib/arm64-simulator"; fi; mkdir -p "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"; for lib in libavcodec.dylib libavformat.dylib libavutil.dylib libswscale.dylib libswresample.dylib libavfilter.dylib; do if [ -f "${LIB_DIR}/${lib}" ]; then cp "${LIB_DIR}/${lib}" "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"; fi; done',
-      :execution_position => :after_compile
-    }
-  ]
 end
 
