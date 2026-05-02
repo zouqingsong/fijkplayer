@@ -59,7 +59,34 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding on m
     },
     {
       :name => 'Copy FFmpeg Libraries',
-      :script => 'set -e; LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib"; mkdir -p "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"; for lib in libavcodec.dylib libavformat.dylib libavutil.dylib libswscale.dylib libswresample.dylib libavfilter.dylib; do if [ -f "${LIB_DIR}/${lib}" ]; then cp "${LIB_DIR}/${lib}" "${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"; fi; done',
+      :script => 'set -e
+LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib"
+DEST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+mkdir -p "$DEST"
+FFMPEG_LIBS="libavcodec libavfilter libavformat libavutil libswresample libswscale"
+for libbase in $FFMPEG_LIBS; do
+  dylib="${libbase}.dylib"
+  fw_dir="${DEST}/${libbase}.framework"
+  if [ -f "${LIB_DIR}/${dylib}" ]; then
+    rm -rf "$fw_dir" "${DEST}/${dylib}"
+    mkdir -p "${fw_dir}/Versions/A/Resources"
+    cp "${LIB_DIR}/${dylib}" "${fw_dir}/Versions/A/${libbase}"
+    install_name_tool -id "@rpath/${libbase}.framework/Versions/A/${libbase}" "${fw_dir}/Versions/A/${libbase}" 2>/dev/null || true
+    ln -sfn A "${fw_dir}/Versions/Current"
+    ln -sfn Versions/Current/${libbase} "${fw_dir}/${libbase}"
+    ln -sfn Versions/Current/Resources "${fw_dir}/Resources"
+  fi
+done
+for libbase in $FFMPEG_LIBS; do
+  fw_binary="${DEST}/${libbase}.framework/Versions/A/${libbase}"
+  if [ -f "$fw_binary" ]; then
+    for ref_lib in $FFMPEG_LIBS; do
+      if [ "$ref_lib" != "$libbase" ]; then
+        install_name_tool -change "@rpath/${ref_lib}.dylib" "@rpath/${ref_lib}.framework/Versions/A/${ref_lib}" "$fw_binary" 2>/dev/null || true
+      fi
+    done
+  fi
+done',
       :execution_position => :after_compile
     }
   ]
