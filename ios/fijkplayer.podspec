@@ -75,9 +75,11 @@ else
 fi
 DEST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 mkdir -p "$DEST"
-for lib in libavcodec.dylib libavformat.dylib libavutil.dylib libswscale.dylib libswresample.dylib libavfilter.dylib; do
+FFMPEG_LIBS="libavcodec.dylib libavfilter.dylib libavformat.dylib libavutil.dylib libswresample.dylib libswscale.dylib"
+for lib in $FFMPEG_LIBS; do
   if [ -f "${LIB_DIR}/${lib}" ]; then
-    cp "${LIB_DIR}/${lib}" "${DEST}/"
+    cp "${LIB_DIR}/${lib}" "${DEST}/${lib}"
+    install_name_tool -id "@rpath/${lib}" "${DEST}/${lib}" 2>/dev/null || true
     if [ "${CODE_SIGNING_REQUIRED}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ]; then
       codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" --preserve-metadata=identifier,entitlements "${DEST}/${lib}"
     fi
