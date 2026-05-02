@@ -255,12 +255,50 @@ copy_to_fijkplayer() {
     fi
     
     # Copy headers
-    local FIJKPLAYER_HEADERS="${SCRIPT_DIR}/../android/src/main/cpp/ffmpeg"
+    local FIJKPLAYER_HEADERS="${SCRIPT_DIR}/../android/src/main/cpp/ffmpeg/include"
     mkdir -p "$FIJKPLAYER_HEADERS"
     
     if [ -d "${OUTPUT_DIR}/arm64/include" ]; then
         cp -r "${OUTPUT_DIR}/arm64/include"/* "$FIJKPLAYER_HEADERS/"
-        echo "Copied FFmpeg headers"
+        echo "Copied FFmpeg installed headers"
+    fi
+
+    # Copy internal headers required by fftools (not installed by make install)
+    if [ -d "$SOURCE_DIR/libavutil" ]; then
+        cp "$SOURCE_DIR/libavutil/thread.h" \
+           "$SOURCE_DIR/libavutil/libm.h" \
+           "$SOURCE_DIR/libavutil/getenv_utf8.h" \
+           "$SOURCE_DIR/libavutil/wchar_filename.h" \
+           "$SOURCE_DIR/libavutil/attributes_internal.h" \
+           "$FIJKPLAYER_HEADERS/libavutil/" 2>/dev/null || true
+        echo "Copied internal libavutil headers"
+    fi
+    if [ -d "$SOURCE_DIR/libavcodec" ]; then
+        cp "$SOURCE_DIR/libavcodec/mathops.h" \
+           "$FIJKPLAYER_HEADERS/libavcodec/" 2>/dev/null || true
+        echo "Copied internal libavcodec headers"
+    fi
+    if [ -d "$SOURCE_DIR/libavdevice" ]; then
+        mkdir -p "$FIJKPLAYER_HEADERS/libavdevice"
+        cp "$SOURCE_DIR/libavdevice/avdevice.h" \
+           "$SOURCE_DIR/libavdevice/version.h" \
+           "$SOURCE_DIR/libavdevice/version_major.h" \
+           "$FIJKPLAYER_HEADERS/libavdevice/" 2>/dev/null || true
+        echo "Copied internal libavdevice headers"
+    fi
+    if [ -d "$SOURCE_DIR/libpostproc" ]; then
+        mkdir -p "$FIJKPLAYER_HEADERS/libpostproc"
+        cp "$SOURCE_DIR/libpostproc/postprocess.h" \
+           "$SOURCE_DIR/libpostproc/version.h" \
+           "$SOURCE_DIR/libpostproc/version_major.h" \
+           "$FIJKPLAYER_HEADERS/libpostproc/" 2>/dev/null || true
+        echo "Copied internal libpostproc headers"
+    fi
+    if [ -d "$SOURCE_DIR/libavutil/mips" ]; then
+        mkdir -p "$FIJKPLAYER_HEADERS/libavutil/mips"
+        cp "$SOURCE_DIR/libavutil/mips/libm_mips.h" \
+           "$FIJKPLAYER_HEADERS/libavutil/mips/" 2>/dev/null || true
+        echo "Copied internal libavutil/mips headers"
     fi
     
     echo "FFmpeg libraries and headers copied to fijkplayer module"
