@@ -216,7 +216,29 @@ copy_to_fijkplayer() {
     # Copy headers
     echo -e "${GREEN}Copying headers...${NC}"
     cp -r "${HEADER_SOURCE}/"* "${FIJKPLAYER_MACOS}/include/"
-    
+
+    # Copy internal headers required by FFmpegKit sources (not installed by make install)
+    local SRC="${PROJECT_ROOT}/ffmpeg/ffmpeg-6.1"
+    if [ -d "$SRC" ]; then
+        cp "$SRC/libavutil/thread.h" "$SRC/libavutil/libm.h" \
+           "$SRC/libavutil/getenv_utf8.h" "$SRC/libavutil/wchar_filename.h" \
+           "$SRC/libavutil/attributes_internal.h" \
+           "${FIJKPLAYER_MACOS}/include/libavutil/" 2>/dev/null || true
+        cp "$SRC/libavcodec/mathops.h" \
+           "${FIJKPLAYER_MACOS}/include/libavcodec/" 2>/dev/null || true
+        mkdir -p "${FIJKPLAYER_MACOS}/include/libavdevice" "${FIJKPLAYER_MACOS}/include/libpostproc"
+        cp "$SRC/libavdevice/avdevice.h" "$SRC/libavdevice/version.h" \
+           "$SRC/libavdevice/version_major.h" \
+           "${FIJKPLAYER_MACOS}/include/libavdevice/" 2>/dev/null || true
+        cp "$SRC/libpostproc/postprocess.h" "$SRC/libpostproc/version.h" \
+           "$SRC/libpostproc/version_major.h" \
+           "${FIJKPLAYER_MACOS}/include/libpostproc/" 2>/dev/null || true
+        mkdir -p "${FIJKPLAYER_MACOS}/include/compat"
+        cp "$SRC/compat/va_copy.h" "$SRC/compat/w32dlfcn.h" \
+           "${FIJKPLAYER_MACOS}/include/compat/" 2>/dev/null || true
+        echo -e "${GREEN}Copied internal FFmpeg headers${NC}"
+    fi
+
     # Fix dylib install names for bundling
     echo -e "${GREEN}Fixing dylib install names...${NC}"
     for lib in libavcodec libavformat libavutil libswscale libswresample libavfilter; do
