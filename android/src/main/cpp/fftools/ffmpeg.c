@@ -358,6 +358,7 @@ static void ffmpeg_cleanup(int ret)
     for (i = 0; i < nb_filtergraphs; i++)
         fg_free(&filtergraphs[i]);
     av_freep(&filtergraphs);
+    nb_filtergraphs = 0;
 
     for (i = 0; i < nb_output_files; i++)
         of_free(&output_files[i]);
@@ -379,7 +380,9 @@ static void ffmpeg_cleanup(int ret)
     av_freep(&filter_nbthreads);
 
     av_freep(&input_files);
+    nb_input_files = 0;
     av_freep(&output_files);
+    nb_output_files = 0;
 
     uninit_opts();
 
@@ -392,7 +395,8 @@ static void ffmpeg_cleanup(int ret)
         av_log(NULL, AV_LOG_INFO, "Conversion failed!\n");
     }
     term_exit();
-    ffmpeg_exited = 1;
+    ffmpeg_exited = 0;
+    atomic_store(&transcode_init_done, 0);
 }
 
 OutputStream *ost_iter(OutputStream *prev)

@@ -247,6 +247,6 @@ public class FijkFFmpegKit {
     
     // Load native library
     static {
-        System.loadLibrary("fijkplayer_native_player");
+        System.loadLibrary("fijkplayer_ffmpeg_kit");
     }
 }
