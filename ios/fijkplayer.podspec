@@ -63,7 +63,7 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   # System frameworks needed for native player
   s.frameworks = 'VideoToolbox', 'CoreVideo', 'CoreMedia', 'CoreFoundation', 'AudioToolbox', 'AVFoundation', 'Accelerate'
 
-  # Script phase to copy FFmpeg dylibs to app bundle and codesign them
+  # Script phase to copy FFmpeg dylibs as framework bundles and codesign them
   s.script_phases = [
     {
       :name => 'Copy FFmpeg Libraries',
@@ -75,16 +75,73 @@ else
 fi
 DEST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
 mkdir -p "$DEST"
-FFMPEG_LIBS="libavcodec.dylib libavfilter.dylib libavformat.dylib libavutil.dylib libswresample.dylib libswscale.dylib"
-for lib in $FFMPEG_LIBS; do
-  if [ -f "${LIB_DIR}/${lib}" ]; then
-    cp "${LIB_DIR}/${lib}" "${DEST}/${lib}"
-    install_name_tool -id "@rpath/${lib}" "${DEST}/${lib}" 2>/dev/null || true
-    if [ "${CODE_SIGNING_REQUIRED}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ]; then
-      codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" --preserve-metadata=identifier,entitlements "${DEST}/${lib}"
-    fi
+FFMPEG_LIBS="libavcodec libavfilter libavformat libavutil libswresample libswscale"
+
+# Create framework bundles for each FFmpeg library
+for libbase in $FFMPEG_LIBS; do
+  dylib="${libbase}.dylib"
+  fw_dir="${DEST}/${libbase}.framework"
+  if [ -f "${LIB_DIR}/${dylib}" ]; then
+    rm -f "${DEST}/${dylib}"
+    mkdir -p "$fw_dir"
+    cp "${LIB_DIR}/${dylib}" "${fw_dir}/${libbase}"
+    install_name_tool -id "@rpath/${libbase}.framework/${libbase}" "${fw_dir}/${libbase}" 2>/dev/null || true
+    cat > "${fw_dir}/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>${libbase}</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.ffmpeg.${libbase}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>${libbase}</string>
+  <key>CFBundlePackageType</key>
+  <string>FMWK</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>MinimumOSVersion</key>
+  <string>15.0</string>
+</dict>
+</plist>
+PLIST
   fi
-done',
+done
+
+# Fix cross-references between FFmpeg framework libraries
+for libbase in $FFMPEG_LIBS; do
+  fw_binary="${DEST}/${libbase}.framework/${libbase}"
+  if [ -f "$fw_binary" ]; then
+    for ref_lib in $FFMPEG_LIBS; do
+      if [ "$ref_lib" != "$libbase" ]; then
+        install_name_tool -change "@rpath/${ref_lib}.dylib" "@rpath/${ref_lib}.framework/${ref_lib}" "$fw_binary" 2>/dev/null || true
+      fi
+    done
+  fi
+done
+
+# Fix the main app binary to reference framework paths
+RUNNER_BINARY="${BUILT_PRODUCTS_DIR}/${EXECUTABLE_PATH}"
+if [ -f "$RUNNER_BINARY" ]; then
+  for libbase in $FFMPEG_LIBS; do
+    install_name_tool -change "@rpath/${libbase}.dylib" "@rpath/${libbase}.framework/${libbase}" "$RUNNER_BINARY" 2>/dev/null || true
+  done
+fi
+
+# Code-sign each framework bundle
+if [ "${CODE_SIGNING_REQUIRED}" = "YES" ] && [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ]; then
+  for libbase in $FFMPEG_LIBS; do
+    fw_dir="${DEST}/${libbase}.framework"
+    if [ -d "$fw_dir" ]; then
+      codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" "$fw_dir"
+    fi
+  done
+fi',
       :execution_position => :after_compile
     }
   ]
