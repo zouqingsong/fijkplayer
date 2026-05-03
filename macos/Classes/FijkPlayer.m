@@ -222,6 +222,7 @@ static const int end = 9;
             break;
             
         case FJKPlayerEventError:
+            [self notifyState:error];  // Notify Flutter of state change BEFORE updating _state
             _state = error;
             [self notifyError:(int)arg1 extra:@(arg2)];
             break;

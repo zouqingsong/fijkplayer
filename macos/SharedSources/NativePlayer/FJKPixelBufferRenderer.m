@@ -55,6 +55,25 @@
             return nil;
         }
         
+        // Initialize to black in NV12 VideoRange (Y=0x10, UV=0x80) to avoid
+        // the green flash caused by an uninitialized chroma plane (UV=0 → green).
+        if (CVPixelBufferLockBaseAddress(_outputBuffer, 0) == kCVReturnSuccess) {
+            size_t planeCount = CVPixelBufferGetPlaneCount(_outputBuffer);
+            if (planeCount >= 2) {
+                // Y plane: 0x10 (video-range black)
+                void *yPlane = CVPixelBufferGetBaseAddressOfPlane(_outputBuffer, 0);
+                size_t ySize = CVPixelBufferGetBytesPerRowOfPlane(_outputBuffer, 0)
+                               * CVPixelBufferGetHeightOfPlane(_outputBuffer, 0);
+                memset(yPlane, 0x10, ySize);
+                // UV plane: 0x80 (neutral chroma)
+                void *uvPlane = CVPixelBufferGetBaseAddressOfPlane(_outputBuffer, 1);
+                size_t uvSize = CVPixelBufferGetBytesPerRowOfPlane(_outputBuffer, 1)
+                                * CVPixelBufferGetHeightOfPlane(_outputBuffer, 1);
+                memset(uvPlane, 0x80, uvSize);
+            }
+            CVPixelBufferUnlockBaseAddress(_outputBuffer, 0);
+        }
+        
         NSLog(@"[FJKRenderer] Initialized: %dx%d", width, height);
     }
     return self;
@@ -99,9 +118,6 @@
     
     if (success) {
         _frameCount++;
-        if (_frameCount % 120 == 0) {
-            NSLog(@"[FJKRenderer] Rendered frame #%lld", _frameCount);
-        }
     }
     
     [_lock unlock];
