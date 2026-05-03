@@ -27,6 +27,7 @@
     dispatch_queue_t _audioDecoderQueue;
     dispatch_queue_t _audioPlaybackQueue;
     int _audioStreamIndex;
+    int _videoStreamIndex;
     double _audioClock;
     NSLock *_audioClockLock;
     
@@ -89,6 +90,7 @@
         _videoFrameRate = 24.0; // Default fallback
         _targetFrameInterval = 1.0/24.0;
         _audioStreamIndex = -1;
+        _videoStreamIndex = -1;
         _audioClock = 0.0;
         _lastVideoPts = -1;
         
@@ -423,6 +425,7 @@
     }
     
     _audioStreamIndex = -1;
+    _videoStreamIndex = -1;
     
     // Cleanup software decoder
     if (_bsfCtx) {
@@ -476,12 +479,13 @@
         return;
     }
     
-    // Find video stream
+    // Find video stream (cached as ivar to avoid repeated lookups in decoder loop)
     int videoStreamIndex = ff_demuxer_find_video_stream(_demuxer);
     if (videoStreamIndex < 0) {
         [self notifyError:@"No video stream found"];
         return;
     }
+    _videoStreamIndex = videoStreamIndex;
     
     // Get video stream
     FFStream *videoStream = ff_demuxer_get_stream(_demuxer, videoStreamIndex);
@@ -791,7 +795,7 @@
     
     // Copy codec parameters from the demuxer stream
     struct AVFormatContext *fmtCtx = ff_demuxer_get_format_context(_demuxer);
-    int videoIdx = ff_demuxer_find_video_stream(_demuxer);
+    int videoIdx = _videoStreamIndex;  // Use cached index, not a repeated lookup
     if (fmtCtx && videoIdx >= 0) {
         avcodec_parameters_to_context(_swDecoderCtx, fmtCtx->streams[videoIdx]->codecpar);
     }
@@ -1041,7 +1045,7 @@ static void decompressionOutputCallback(
             
             if (ret == 0 && packet) {
                 consecutiveErrors = 0; // Reset on success
-                int video_stream_index = ff_demuxer_find_video_stream(_demuxer);
+                int video_stream_index = _videoStreamIndex;
                 
                 // Route packet to appropriate decoder
                 if (packet->stream_index == video_stream_index) {
