@@ -56,38 +56,8 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding on m
       :name => 'Sync Shared Sources from iOS',
       :script => 'set -e; SRC="${PODS_TARGET_SRCROOT}/../ios"; DEST="${PODS_TARGET_SRCROOT}/SharedSources"; mkdir -p "${DEST}/NativePlayer" "${DEST}/Classes" "${DEST}/FFmpegKit"; for f in FJKNativePlayer FJKPixelBufferRenderer FJKAudioDecoder FJKAudioRenderer; do cp "${SRC}/NativePlayer/${f}.h" "${SRC}/NativePlayer/${f}.m" "${DEST}/NativePlayer/"; done; cp "${SRC}/NativePlayer/FJKAudioQueue.h" "${SRC}/NativePlayer/FJKAudioQueue.c" "${DEST}/NativePlayer/"; cp "${SRC}/NativePlayer/ffmpeg_demuxer.h" "${SRC}/NativePlayer/ffmpeg_demuxer.c" "${DEST}/NativePlayer/"; cp "${SRC}/NativePlayer/async_io_protocol.h" "${SRC}/NativePlayer/async_io_protocol.c" "${DEST}/NativePlayer/"; for f in FFmpegRecorder FijkQueuingEventSink FijkHostOption; do cp "${SRC}/Classes/${f}.h" "${SRC}/Classes/${f}.m" "${DEST}/Classes/"; done; cp -R "${SRC}/FFmpegKit/"* "${DEST}/FFmpegKit/"',
       :execution_position => :before_compile
-    },
-    {
-      :name => 'Copy FFmpeg Libraries',
-      :script => 'set -e
-LIB_DIR="${PODS_TARGET_SRCROOT}/FFmpeg/lib"
-DEST="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
-mkdir -p "$DEST"
-FFMPEG_LIBS="libavcodec libavfilter libavformat libavutil libswresample libswscale"
-for libbase in $FFMPEG_LIBS; do
-  dylib="${libbase}.dylib"
-  fw_dir="${DEST}/${libbase}.framework"
-  if [ -f "${LIB_DIR}/${dylib}" ]; then
-    rm -rf "$fw_dir" "${DEST}/${dylib}"
-    mkdir -p "${fw_dir}/Versions/A/Resources"
-    cp "${LIB_DIR}/${dylib}" "${fw_dir}/Versions/A/${libbase}"
-    install_name_tool -id "@rpath/${libbase}.framework/Versions/A/${libbase}" "${fw_dir}/Versions/A/${libbase}" 2>/dev/null || true
-    ln -sfn A "${fw_dir}/Versions/Current"
-    ln -sfn Versions/Current/${libbase} "${fw_dir}/${libbase}"
-    ln -sfn Versions/Current/Resources "${fw_dir}/Resources"
-  fi
-done
-for libbase in $FFMPEG_LIBS; do
-  fw_binary="${DEST}/${libbase}.framework/Versions/A/${libbase}"
-  if [ -f "$fw_binary" ]; then
-    for ref_lib in $FFMPEG_LIBS; do
-      if [ "$ref_lib" != "$libbase" ]; then
-        install_name_tool -change "@rpath/${ref_lib}.dylib" "@rpath/${ref_lib}.framework/Versions/A/${ref_lib}" "$fw_binary" 2>/dev/null || true
-      fi
-    done
-  fi
-done',
-      :execution_position => :after_compile
     }
+    # NOTE: FFmpeg dylibs are copied by the app's Podfile (Runner target context),
+    # not here, because pod target script phases can't access the Runner app's Frameworks folder.
   ]
 end
