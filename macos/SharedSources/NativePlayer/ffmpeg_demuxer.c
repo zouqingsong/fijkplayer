@@ -239,9 +239,10 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
             av_dict_set(&opts, "multiple_requests", "1", 0);  // HTTP persistent connections
             av_dict_set(&opts, "seekable", "0", 0);  // Treat HTTP as non-seekable for streaming
         } else if (strncmp(url, "rtsp://", 7) == 0) {
-            // RTSP-specific options
+            // RTSP-specific options for low-latency live streaming
             av_dict_set(&opts, "rtsp_transport", "tcp", 0);
             av_dict_set(&opts, "fflags", "nobuffer", 0);
+            av_dict_set(&opts, "flags", "low_delay", 0);
             av_dict_set(&opts, "stimeout", "10000000", 0); // 10 second socket timeout
         }
     }
@@ -262,16 +263,19 @@ int ff_demuxer_open(FFDemuxer* demuxer, const char* url, FFDemuxerOptions* optio
     demuxer->last_operation_time = av_gettime();
     
     // Set probe size and analyze duration for faster startup
+    // For RTSP, use minimal values — SDP in the DESCRIBE response already provides
+    // full stream info, so probing many packets is wasted time.
+    bool is_rtsp = (strncmp(url, "rtsp://", 7) == 0);
     if (options && options->max_probe_size > 0) {
         demuxer->format_ctx->probesize = options->max_probe_size;
     } else {
-        demuxer->format_ctx->probesize = 5000000; // 5MB default
+        demuxer->format_ctx->probesize = is_rtsp ? 32768 : 5000000; // 32KB for RTSP, 5MB otherwise
     }
     
     if (options && options->max_analyze_duration_us > 0) {
         demuxer->format_ctx->max_analyze_duration = options->max_analyze_duration_us;
     } else {
-        demuxer->format_ctx->max_analyze_duration = 5000000; // 5 seconds default
+        demuxer->format_ctx->max_analyze_duration = is_rtsp ? 0 : 5000000; // 0 for RTSP (skip), 5s otherwise
     }
     
     // Set max packet size to prevent buffer overflows (especially for HTTP)
@@ -532,10 +536,8 @@ int ff_demuxer_find_video_stream(FFDemuxer* demuxer) {
         return -1;
     }
     
-    int ret = av_find_best_stream(demuxer->format_ctx, AVMEDIA_TYPE_VIDEO, 
-                                   -1, -1, NULL, 0);
-    LOGD("Best video stream: %d", ret);
-    return ret;
+    return av_find_best_stream(demuxer->format_ctx, AVMEDIA_TYPE_VIDEO, 
+                               -1, -1, NULL, 0);
 }
 
 /* Find audio stream */
