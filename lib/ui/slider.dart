@@ -195,7 +195,9 @@ class _SliderPainter extends CustomPainter {
 
     // draw circle cursor
     pt.color = colors.cursorColor;
-    pt.color = pt.color.withAlpha(max(0, pt.color.alpha - 50));
+    final int fadedAlpha =
+      ((pt.color.a * 255.0).round() - 50).clamp(0, 255).toInt();
+    pt.color = pt.color.withAlpha(fadedAlpha);
     radius = min(size.height / 2, dragging ? 10 : 5);
     canvas.drawCircle(Offset(value, size.height / 2), radius, pt);
     pt.color = colors.cursorColor;

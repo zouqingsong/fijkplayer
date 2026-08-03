@@ -208,7 +208,8 @@ class _DefaultFijkPanelState extends State<_DefaultFijkPanel> {
       duration: Duration(milliseconds: 400),
       child: Container(
         height: barHeight,
-        color: Theme.of(context).dialogBackgroundColor,
+        color: Theme.of(context).dialogTheme.backgroundColor ??
+            Theme.of(context).colorScheme.surface,
         child: Row(
           children: <Widget>[
             _buildVolumeButton(),

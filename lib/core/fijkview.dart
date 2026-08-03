@@ -400,9 +400,7 @@ class __InnerFijkViewState extends State<_InnerFijkView> {
   FijkView get fView => widget.fijkViewState.widget;
 
   void _voidValueListener() {
-    var binding = WidgetsBinding.instance;
-    if (binding != null)
-      binding.addPostFrameCallback((_) => _fijkValueListener());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fijkValueListener());
   }
 
   void _fijkValueListener() {

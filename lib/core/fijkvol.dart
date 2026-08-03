@@ -236,11 +236,10 @@ class _FijkVolumeWatcherState extends State<FijkVolumeWatcher> {
     bool active = _timer?.isActive ?? false;
     _timer?.cancel();
     Widget widget = defaultFijkVolumeToast(vol, _volController.stream);
-    if (active == false) {
+    if (!active) {
       var entry = OverlayEntry(builder: (_) => widget);
       _entry = entry;
-      var overlay = Overlay.of(context);
-      if (overlay != null) overlay.insert(entry);
+      Overlay.of(context).insert(entry);
     }
     _timer = Timer(const Duration(milliseconds: 800), () {
       _entry?.remove();
