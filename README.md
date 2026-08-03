@@ -134,12 +134,12 @@ Key Components:
 
 **iOS**
 - ✅ Physical devices (arm64)
-- ✅ iOS Simulator (x86_64, arm64)
+- ✅ iOS Simulator (arm64)
 - ✅ Hardware acceleration (VideoToolbox + AudioToolbox)
 - ✅ HTTPS/TLS support (SecureTransport)
 
 **Android**
-- ✅ Physical devices (arm64-v8a, armeabi-v7a)
+- ✅ Physical devices (arm64-v8a)
 - ✅ Android Emulator
 - ✅ Hardware acceleration (MediaCodec)
 - ✅ HTTPS/TLS support (OpenSSL 3.0)

@@ -79,6 +79,6 @@ public class FijkFFmpegRecorder {
     
     // Load native library
     static {
-        System.loadLibrary("fijkplayer_native_player");
+        System.loadLibrary("fijkplayer_ffmpeg_recorder");
     }
 }

@@ -87,7 +87,7 @@ static void* recording_thread_func(void* arg) {
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_befovy_fijkplayer_FijkPlayer_nativeStartFFmpegRecording(
+Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStartRecording(
     JNIEnv *env, jobject thiz, jstring rtsp_url, jstring output_path) {
     
     pthread_mutex_lock(&g_mutex);
@@ -255,7 +255,7 @@ Java_com_befovy_fijkplayer_FijkPlayer_nativeStartFFmpegRecording(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_befovy_fijkplayer_FijkPlayer_nativeStopFFmpegRecording(JNIEnv *env, jobject thiz) {
+Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStopRecording(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_mutex);
 
     if (!g_recorder.is_recording) {
@@ -313,7 +313,7 @@ Java_com_befovy_fijkplayer_FijkPlayer_nativeStopFFmpegRecording(JNIEnv *env, job
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_befovy_fijkplayer_FijkPlayer_nativeIsFFmpegRecording(JNIEnv *env, jobject thiz) {
+Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeIsRecording(JNIEnv *env, jobject thiz) {
     pthread_mutex_lock(&g_mutex);
     jboolean result = g_recorder.is_recording ? JNI_TRUE : JNI_FALSE;
     pthread_mutex_unlock(&g_mutex);

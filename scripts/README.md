@@ -5,7 +5,7 @@ This directory contains the build scripts for compiling FFmpeg with HTTPS suppor
 ## Scripts
 
 ### `build-android.sh`
-Builds FFmpeg with OpenSSL 3.0.12 for Android platforms (arm64-v8a and armeabi-v7a).
+Builds FFmpeg with OpenSSL 3.0.12 for Android arm64-v8a.
 
 **Features:**
 - OpenSSL 3.0.12 integration for HTTPS support

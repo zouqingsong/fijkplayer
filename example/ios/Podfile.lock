@@ -19,8 +19,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
 
 SPEC CHECKSUMS:
-  fijkplayer: 5ac6a9e74457716c0360423c20deb9d3191268a2
-  Flutter: e0871f40cf51350855a761d2e70bf5af5b9b5de7
+  fijkplayer: 06e19f78715948ead3ba18018318d6a0b34d3b57
+  Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
 
 PODFILE CHECKSUM: d90195dbd19f00dce8907f6c94a930b8e567a8d5

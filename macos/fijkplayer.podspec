@@ -3,7 +3,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'fijkplayer'
-  s.version          = '0.11.0'
+  s.version          = '0.11.3'
   s.summary          = 'Flutter media player plugin with native FFmpeg support for macOS'
   s.description      = <<-DESC
 Flutter media player plugin with native FFmpeg-based player implementation.
