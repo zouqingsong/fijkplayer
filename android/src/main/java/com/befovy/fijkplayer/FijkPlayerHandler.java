@@ -274,9 +274,10 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         }
         case "reset": {
             try {
-                // NativePlayer doesn't have reset(), so we stop and seek to 0
-                instance.player.stop();
-                instance.player.seekTo(0);
+                // Full reset back to IDLE so the player can be reused (setDataSource
+                // again). stop() alone leaves native in STOPPED, which rejects a
+                // subsequent setDataSource/prepare.
+                instance.player.reset();
                 Log.i(TAG, "Reset: player=" + playerId);
                 result.success(null);
             } catch (Exception e) {
@@ -313,6 +314,7 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             }
             break;
         }
+        case "getCurrentPosition":  // Dart channel name
         case "getPosition": {
             try {
                 long pos = instance.player.getCurrentPosition();
@@ -419,6 +421,38 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                 Log.e(TAG, "Failed to get video height", e);
                 result.error("GET_HEIGHT_FAILED", e.getMessage(), null);
             }
+            break;
+        }
+        case "setPlaybackMode": {
+            try {
+                Integer mode = call.argument("mode");
+                Integer bufferMs = call.argument("customBufferMs");
+                Boolean enableAudio = call.argument("enableAudio");
+                Integer maxLatencyMs = call.argument("maxLatencyMs");
+                Boolean enableFrameDrop = call.argument("enableFrameDrop");
+                if (mode == null) mode = 0;               // LIVE_LOW_LATENCY
+                if (bufferMs == null) bufferMs = -1;
+                if (enableAudio == null) enableAudio = false;
+                if (maxLatencyMs == null) maxLatencyMs = -1;
+                if (enableFrameDrop == null) enableFrameDrop = true;
+                instance.player.setPlaybackMode(mode, bufferMs, enableAudio,
+                                                maxLatencyMs, enableFrameDrop);
+                Log.i(TAG, "Set playback mode: player=" + playerId + ", mode=" +
+                               mode + ", buffer=" + bufferMs + "ms, audio=" +
+                               enableAudio + ", maxLatency=" + maxLatencyMs +
+                               "ms, frameDrop=" + enableFrameDrop);
+                result.success(null);
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to set playback mode", e);
+                result.error("SET_PLAYBACK_MODE_FAILED", e.getMessage(), null);
+            }
+            break;
+        }
+        case "setOption":
+        case "applyOptions": {
+            // NativePlayer is configured via setPlaybackMode; individual ijk-style
+            // options are not applicable. Accept for API compatibility.
+            result.success(null);
             break;
         }
         case "snapshot": {

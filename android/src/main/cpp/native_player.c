@@ -565,6 +565,12 @@ int native_player_start(NativePlayer* player) {
     player->state = PLAYER_STATE_STARTED;
     player->start_time = 0;
     
+    // Re-activate packet queues: a previous stop() aborts them, and the abort flag
+    // is never cleared elsewhere. Without this, a restart after reset silently gets
+    // no packets and stalls in preparing.
+    packet_queue_start(&player->videoq);
+    packet_queue_start(&player->audioq);
+    
     // Start demuxer thread
     pthread_create(&player->demuxer_thread, NULL, demuxer_thread_func, player);
     
@@ -1293,6 +1299,17 @@ static void* demuxer_thread_func(void* arg) {
     
     int packet_count = 0;
     
+    // Live-mode latency guard: bound the video backlog so that decode hiccups cannot
+    // accumulate latency over time. Derived from the configured max latency budget
+    // (~1 frame per 33ms). When exceeded, drop stale packets to the newest keyframe.
+    int video_drop_threshold = 0;
+    if (player->options.playback_mode == 0 && player->options.enable_frame_drop) {
+        int budget_ms = player->options.max_latency_ms > 0
+                            ? player->options.max_latency_ms : 200;
+        video_drop_threshold = budget_ms / 33;
+        if (video_drop_threshold < 3) video_drop_threshold = 3;
+    }
+    
     while (!player->stop_requested) {
         if (player->paused) {
             usleep(10000);
@@ -1322,6 +1339,12 @@ static void* demuxer_thread_func(void* arg) {
             if (packet_queue_put(&player->videoq, packet) < 0) {
                 LOGW("📦 Failed to put video packet into queue");
                 ff_packet_free(packet);
+            } else if (video_drop_threshold > 0) {
+                // Live latency guard: if the decoder falls behind and the queue grows
+                // past the latency budget, jump forward to the newest keyframe so the
+                // accumulated latency is discarded instead of building up over time.
+                packet_queue_drop_to_latest_keyframe(&player->videoq,
+                                                     video_drop_threshold);
             }
         } else if (packet->stream_index == player->audio_stream_index) {
             // Audio packet - put into audio queue
@@ -1453,11 +1476,20 @@ static void* decoder_thread_func(void* arg) {
             if (frame->data[0]) free(frame->data[0]);
             free(frame);
             
-            // Sleep for computed delay (like ijkplayer's remaining_time)
-            if (delay > 0 && delay < 0.5) {  // Sanity check: 0-500ms
-                usleep((useconds_t)(delay * 1000000));
-            } else {
-                usleep(40000);  // Fallback to 40ms if delay is unreasonable
+            // Frame pacing: only throttle for VOD / audio-synced playback. In
+            // LIVE_LOW_LATENCY mode (mode 0) there is no audio clock to sync to, and
+            // packet arrival is already paced by the network via the blocking
+            // packet_queue_get. Sleeping here would only stop the decoder from draining
+            // a backlog, so any decode hiccup (common on some Android devices) would
+            // accumulate latency permanently. Skip artificial pacing for live so the
+            // pipeline always stays at the live edge.
+            if (player->options.playback_mode != 0) {
+                // Sleep for computed delay (like ijkplayer's remaining_time)
+                if (delay > 0 && delay < 0.5) {  // Sanity check: 0-500ms
+                    usleep((useconds_t)(delay * 1000000));
+                } else {
+                    usleep(40000);  // Fallback to 40ms if delay is unreasonable
+                }
             }
         } else if (recv_ret == -EAGAIN) {
             // No frame available yet - decoder needs more packets

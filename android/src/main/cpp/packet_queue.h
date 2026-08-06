@@ -49,6 +49,21 @@ int packet_queue_get(PacketQueue* q, FFPacket** pkt, int block);
 void packet_queue_flush(PacketQueue* q);
 
 /**
+ * (Re)activate the queue for use after an abort/stop: clears the abort flag so
+ * packet_queue_put/get work again. Must be called before restarting playback.
+ */
+void packet_queue_start(PacketQueue* q);
+
+/**
+ * Live-latency guard: if the queue holds more than max_packets, drop the oldest
+ * packets up to (but keeping) the most recent keyframe, so a slow decoder cannot
+ * accumulate latency over time. Does nothing if the queue is within budget or if
+ * there is no newer keyframe to jump to.
+ * Returns the number of packets dropped.
+ */
+int packet_queue_drop_to_latest_keyframe(PacketQueue* q, int max_packets);
+
+/**
  * Abort any blocking operations
  */
 void packet_queue_abort(PacketQueue* q);

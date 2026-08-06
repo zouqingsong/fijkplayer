@@ -136,6 +136,56 @@ void packet_queue_flush(PacketQueue* q) {
     pthread_mutex_unlock(&q->mutex);
 }
 
+int packet_queue_drop_to_latest_keyframe(PacketQueue* q, int max_packets) {
+    if (!q || max_packets < 1) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&q->mutex);
+
+    if (q->nb_packets <= max_packets) {
+        pthread_mutex_unlock(&q->mutex);
+        return 0;
+    }
+
+    // Find the newest keyframe currently in the queue.
+    PacketList* last_key = NULL;
+    for (PacketList* n = q->first_pkt; n; n = n->next) {
+        if (n->pkt && n->pkt->is_key_frame) {
+            last_key = n;
+        }
+    }
+
+    // Nothing to jump to, or the queue already starts at the newest keyframe.
+    if (!last_key || last_key == q->first_pkt) {
+        pthread_mutex_unlock(&q->mutex);
+        return 0;
+    }
+
+    // Drop everything before the newest keyframe.
+    int dropped = 0;
+    PacketList* n = q->first_pkt;
+    while (n && n != last_key) {
+        PacketList* next = n->next;
+        q->nb_packets--;
+        if (n->pkt) {
+            q->size -= n->pkt->size;
+            ff_packet_free(n->pkt);
+        }
+        free(n);
+        n = next;
+        dropped++;
+    }
+    q->first_pkt = last_key;
+
+    pthread_mutex_unlock(&q->mutex);
+
+    if (dropped > 0) {
+        LOGW("Dropped %d stale video packets to latest keyframe (backlog guard)", dropped);
+    }
+    return dropped;
+}
+
 void packet_queue_abort(PacketQueue* q) {
     if (!q) {
         return;
@@ -144,6 +194,16 @@ void packet_queue_abort(PacketQueue* q) {
     pthread_mutex_lock(&q->mutex);
     q->abort_request = 1;
     pthread_cond_broadcast(&q->cond);
+    pthread_mutex_unlock(&q->mutex);
+}
+
+void packet_queue_start(PacketQueue* q) {
+    if (!q) {
+        return;
+    }
+    
+    pthread_mutex_lock(&q->mutex);
+    q->abort_request = 0;
     pthread_mutex_unlock(&q->mutex);
 }
 
