@@ -40,6 +40,7 @@
 @property (atomic, assign) BOOL stopRequested;
 @property (atomic, assign) BOOL writeHeaderDone;
 @property (atomic, assign) int writtenPackets;
+@property (atomic, assign) int64_t writtenBytes;
 @property (atomic, strong) NSError *lastRecordingError;
 @property (nonatomic, strong) dispatch_semaphore_t stopWaitSemaphore;
 
@@ -66,6 +67,84 @@ static int ffmpegRecorderFindStartCode(const uint8_t *data, int size, int from, 
     return -1;
 }
 
+static BOOL ffmpegRecorderBufferStartsWithStartCode(const uint8_t *data, int size) {
+    if (!data || size < 4) return NO;
+    if (data[0] == 0x00 && data[1] == 0x00) {
+        if (data[2] == 0x01) return YES;
+        if (size >= 4 && data[2] == 0x00 && data[3] == 0x01) return YES;
+    }
+    return NO;
+}
+
+static BOOL ffmpegRecorderIsH264IdrNal(uint8_t nalHeader) {
+    uint8_t nalType = nalHeader & 0x1F;
+    return nalType == 5; // IDR
+}
+
+static BOOL ffmpegRecorderIsHevcIrapNal(uint8_t nalHeader) {
+    uint8_t nalType = (nalHeader >> 1) & 0x3F;
+    // HEVC IRAP pictures: BLA/IDR/CRA range
+    return nalType >= 16 && nalType <= 21;
+}
+
+static BOOL ffmpegRecorderPacketHasSyncNal(enum AVCodecID codecId, const uint8_t *data, int size) {
+    if (!data || size <= 0) return NO;
+
+    int startLen = 0;
+    int pos = ffmpegRecorderFindStartCode(data, size, 0, &startLen);
+    if (pos >= 0) {
+        // Annex-B bitstream
+        while (pos >= 0) {
+            int nalStart = pos + startLen;
+            if (nalStart < size) {
+                uint8_t nalHeader = data[nalStart];
+                if (codecId == AV_CODEC_ID_H264 && ffmpegRecorderIsH264IdrNal(nalHeader)) {
+                    return YES;
+                }
+                if (codecId == AV_CODEC_ID_HEVC && ffmpegRecorderIsHevcIrapNal(nalHeader)) {
+                    return YES;
+                }
+            }
+
+            int nextLen = 0;
+            pos = ffmpegRecorderFindStartCode(data, size, nalStart, &nextLen);
+            startLen = nextLen;
+        }
+        return NO;
+    }
+
+    // Length-prefixed format (AVCC/HVCC)
+    int offset = 0;
+    while (offset + 4 <= size) {
+        uint32_t nalSize = ((uint32_t)data[offset] << 24) |
+                           ((uint32_t)data[offset + 1] << 16) |
+                           ((uint32_t)data[offset + 2] << 8) |
+                           (uint32_t)data[offset + 3];
+        offset += 4;
+        if (nalSize == 0 || offset + (int)nalSize > size) break;
+
+        uint8_t nalHeader = data[offset];
+        if (codecId == AV_CODEC_ID_H264 && ffmpegRecorderIsH264IdrNal(nalHeader)) {
+            return YES;
+        }
+        if (codecId == AV_CODEC_ID_HEVC && ffmpegRecorderIsHevcIrapNal(nalHeader)) {
+            return YES;
+        }
+        offset += (int)nalSize;
+    }
+
+    return NO;
+}
+
+static BOOL ffmpegRecorderPacketIsKeyframeForCodec(enum AVCodecID codecId, const AVPacket *pkt) {
+    if (!pkt) return NO;
+    if (pkt->flags & AV_PKT_FLAG_KEY) return YES;
+    if (codecId == AV_CODEC_ID_H264 || codecId == AV_CODEC_ID_HEVC) {
+        return ffmpegRecorderPacketHasSyncNal(codecId, pkt->data, pkt->size);
+    }
+    return NO;
+}
+
 static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     if (!pkt || !pkt->data || pkt->size < 4) {
         return 0;
@@ -73,7 +152,7 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
 
     int firstStartLen = 0;
     int firstStart = ffmpegRecorderFindStartCode(pkt->data, pkt->size, 0, &firstStartLen);
-    if (firstStart < 0) {
+    if (firstStart < 0 || firstStart != 0) {
         // Packet does not look like Annex-B. Keep original payload.
         return 0;
     }
@@ -161,6 +240,7 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         _stopRequested = NO;
         _writeHeaderDone = NO;
         _writtenPackets = 0;
+        _writtenBytes = 0;
         _lastRecordingError = nil;
         _stopWaitSemaphore = nil;
     }
@@ -186,6 +266,7 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         _isRecording = YES;
         _writeHeaderDone = NO;
         _writtenPackets = 0;
+        _writtenBytes = 0;
         _lastRecordingError = nil;
         _stopWaitSemaphore = dispatch_semaphore_create(0);
     }
@@ -202,8 +283,9 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     AVPacket pkt;
     int64_t startPts = -1;
     int64_t startDts = -1;
+    int64_t runningInputPts = 0;
+    int64_t runningInputDts = 0;
     BOOL gotKeyframe = NO;
-    BOOL useMpegTsOutput = NO;
     BOOL isRtspSource = NO;
     
     NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@", _rtspUrl, _outputPath);
@@ -257,15 +339,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     NSLog(@"[FFmpegRecorder] Found video stream at index %d, codec_id=%d", 
           _videoStreamIndex, _inputContext->streams[_videoStreamIndex]->codecpar->codec_id);
 
-    enum AVCodecID inputCodecId = _inputContext->streams[_videoStreamIndex]->codecpar->codec_id;
-    if (isRtspSource && inputCodecId == AV_CODEC_ID_HEVC) {
-        // HEVC over RTSP can carry packetization that is fragile in MP4 copy-muxing.
-        // Prefer MPEG-TS to preserve Annex-B semantics and maximize decoder compatibility.
-        useMpegTsOutput = YES;
-    }
-    
-    // Create output context (MP4 for H264, MPEG-TS for HEVC)
-    const char *formatName = useMpegTsOutput ? "mpegts" : "mp4";
+    // Create output context. Recording is standardized to MP4 on mobile.
+    const char *formatName = "mp4";
     ret = avformat_alloc_output_context2(&_outputContext, NULL, formatName, [_outputPath UTF8String]);
     if (ret < 0) {
         NSLog(@"[FFmpegRecorder] Failed to create output context: %s", av_err2str(ret));
@@ -304,10 +379,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     }
     
     AVDictionary *muxerOpts = NULL;
-    if (!useMpegTsOutput) {
-        // Set faststart for proper MP4 playback.
-        av_dict_set(&muxerOpts, "movflags", "faststart", 0);
-    }
+    // Set faststart for proper MP4 playback.
+    av_dict_set(&muxerOpts, "movflags", "faststart", 0);
     
     // Write header
     ret = avformat_write_header(_outputContext, &muxerOpts);
@@ -337,45 +410,74 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         if (pkt.stream_index == _videoStreamIndex) {
             AVStream *inStr = _inputContext->streams[_videoStreamIndex];
             AVStream *outStr = _outputContext->streams[0];
-
-            // Some RTSP sources provide Annex-B payloads. MP4 expects length-prefixed
-            // samples for H264/HEVC, so normalize packet framing before muxing.
             enum AVCodecID codecId = inStr->codecpar->codec_id;
-            if (!useMpegTsOutput && (codecId == AV_CODEC_ID_H264 || codecId == AV_CODEC_ID_HEVC)) {
-                int convertRet = ffmpegRecorderConvertAnnexBToLengthPrefixed(&pkt);
-                if (convertRet < 0) {
-                    NSLog(@"[FFmpegRecorder] Failed to convert Annex-B packet: %s", av_err2str(convertRet));
-                    av_packet_unref(&pkt);
-                    break;
-                }
-            }
+            BOOL isVideoKeyPacket = ffmpegRecorderPacketIsKeyframeForCodec(codecId, &pkt);
+
+            // Keep packet payload untouched for MP4 muxing.
+            // Some camera streams advertise Annex-B-like prefixes inconsistently,
+            // and manual conversion here can corrupt slice payloads.
 
             // Wait for first keyframe before writing any packets
             if (!gotKeyframe) {
-                if (pkt.flags & AV_PKT_FLAG_KEY) {
+                if (isVideoKeyPacket) {
                     gotKeyframe = YES;
-                    startPts = pkt.pts;
-                    startDts = pkt.dts;
+                    int64_t keyPts = (pkt.pts != AV_NOPTS_VALUE) ? pkt.pts : pkt.dts;
+                    int64_t keyDts = (pkt.dts != AV_NOPTS_VALUE) ? pkt.dts : keyPts;
+                    if (keyPts == AV_NOPTS_VALUE) keyPts = 0;
+                    if (keyDts == AV_NOPTS_VALUE) keyDts = keyPts;
+
+                    startPts = keyPts;
+                    startDts = keyDts;
+                    runningInputPts = 0;
+                    runningInputDts = 0;
                     NSLog(@"[FFmpegRecorder] Got first keyframe, starting recording");
                 } else {
                     av_packet_unref(&pkt);
                     continue;
                 }
             }
-            
+
+            // Normalize missing/invalid timestamps before muxing.
+            int64_t srcPts = pkt.pts;
+            int64_t srcDts = pkt.dts;
+            if (srcPts == AV_NOPTS_VALUE && srcDts != AV_NOPTS_VALUE) srcPts = srcDts;
+            if (srcDts == AV_NOPTS_VALUE && srcPts != AV_NOPTS_VALUE) srcDts = srcPts;
+            if (srcPts == AV_NOPTS_VALUE) srcPts = startPts + runningInputPts;
+            if (srcDts == AV_NOPTS_VALUE) srcDts = startDts + runningInputDts;
+
+            int64_t relPts = srcPts - startPts;
+            int64_t relDts = srcDts - startDts;
+            if (relPts < 0) relPts = 0;
+            if (relDts < 0) relDts = 0;
+
+            int64_t inputDur = pkt.duration;
+            if (inputDur <= 0 || inputDur == AV_NOPTS_VALUE) {
+                if (inStr->avg_frame_rate.num > 0 && inStr->avg_frame_rate.den > 0) {
+                    inputDur = av_rescale_q(1, av_inv_q(inStr->avg_frame_rate), inStr->time_base);
+                }
+                if (inputDur <= 0) inputDur = 1;
+            }
+
             // Adjust timestamps relative to first keyframe
-            pkt.pts = av_rescale_q_rnd(pkt.pts - startPts, inStr->time_base, 
-                                       outStr->time_base, 
+            pkt.pts = av_rescale_q_rnd(relPts, inStr->time_base,
+                                       outStr->time_base,
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            pkt.dts = av_rescale_q_rnd(pkt.dts - startDts, inStr->time_base, 
-                                       outStr->time_base, 
+            pkt.dts = av_rescale_q_rnd(relDts, inStr->time_base,
+                                       outStr->time_base,
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
             if (pkt.pts < pkt.dts) {
                 pkt.pts = pkt.dts;
             }
-            pkt.duration = av_rescale_q(pkt.duration, inStr->time_base, outStr->time_base);
+            pkt.duration = av_rescale_q(inputDur, inStr->time_base, outStr->time_base);
+            if (pkt.duration <= 0) pkt.duration = 1;
             pkt.stream_index = 0;
             pkt.pos = -1;
+            if (isVideoKeyPacket) {
+                pkt.flags |= AV_PKT_FLAG_KEY;
+            }
+
+            runningInputPts = relPts + inputDur;
+            runningInputDts = relDts + inputDur;
             
             // Write packet to output
             ret = av_interleaved_write_frame(_outputContext, &pkt);
@@ -385,6 +487,7 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
                 break;
             }
             _writtenPackets++;
+            _writtenBytes += pkt.size;
         }
         
         av_packet_unref(&pkt);
@@ -395,6 +498,10 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         _lastRecordingError = [NSError errorWithDomain:@"FFmpegRecorder"
                                                   code:-4
                                               userInfo:@{NSLocalizedDescriptionKey: @"No video packets were written before stop"}];
+    } else if (_writtenPackets < 5) {
+        _lastRecordingError = [NSError errorWithDomain:@"FFmpegRecorder"
+                                                  code:-5
+                                              userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Recording incomplete: only %d video packets were written", _writtenPackets]}];
     }
     [self cleanup];
 }
@@ -418,6 +525,28 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         
         avformat_free_context(_outputContext);
         _outputContext = NULL;
+    }
+
+    // Detect false-success outputs where trailer exists but media payload is too small.
+    if (_outputPath.length > 0) {
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:_outputPath error:nil];
+        unsigned long long fileSize = [attrs fileSize];
+        NSLog(@"[FFmpegRecorder] Recording summary: packets=%d, payloadBytes=%lld, fileSize=%llu bytes", _writtenPackets, _writtenBytes, fileSize);
+    }
+
+    if (!_lastRecordingError && _outputPath.length > 0) {
+        NSDictionary *attrs = [[NSFileManager defaultManager] attributesOfItemAtPath:_outputPath error:nil];
+        unsigned long long fileSize = [attrs fileSize];
+        if (fileSize > 0 && fileSize < 32 * 1024) {
+            _lastRecordingError = [NSError errorWithDomain:@"FFmpegRecorder"
+                                                      code:-6
+                                                  userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Recording output too small (%llu bytes)", fileSize]}];
+            NSError *deleteError = nil;
+            [[NSFileManager defaultManager] removeItemAtPath:_outputPath error:&deleteError];
+            if (deleteError) {
+                NSLog(@"[FFmpegRecorder] Failed to delete tiny output file: %@", deleteError.localizedDescription);
+            }
+        }
     }
     
     // Close input
