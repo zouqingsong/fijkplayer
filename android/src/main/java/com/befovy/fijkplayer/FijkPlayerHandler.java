@@ -1,14 +1,19 @@
 package com.befovy.fijkplayer;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.util.Log;
+import android.view.PixelCopy;
 import android.view.Surface;
+import android.os.Handler;
+import android.os.Looper;
 import androidx.annotation.NonNull;
 import io.flutter.plugin.common.BinaryMessenger;
 import io.flutter.plugin.common.EventChannel;
 import io.flutter.plugin.common.MethodCall;
 import io.flutter.plugin.common.MethodChannel;
 import io.flutter.view.TextureRegistry;
+import java.io.ByteArrayOutputStream;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -75,6 +80,7 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             handleReset(call, result);
             break;
         case "release":
+        case "releasePlayer": // Alias used by the Dart side
             handleRelease(call, result);
             break;
         case "seekTo":
@@ -464,7 +470,9 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                     instance.methodChannel.invokeMethod("_onSnapshot", args);
                     result.success(null);
                 } else {
-                    result.error("SNAPSHOT_FAILED", "No frame available", null);
+                    // Fallback for Surface-rendering pipeline where native YUV planes
+                    // may not be available yet: capture the latest Surface frame.
+                    captureSnapshotWithPixelCopy(instance, result, 3);
                 }
             } catch (Exception e) {
                 Log.e(TAG, "Snapshot failed", e);
@@ -481,6 +489,61 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             result.notImplemented();
             break;
         }
+    }
+
+    private void captureSnapshotWithPixelCopy(PlayerInstance instance,
+                                              MethodChannel.Result result,
+                                              int remainingAttempts) {
+        final Surface surface = instance.surfaceManager.getSurface();
+        if (surface == null) {
+            result.error("SNAPSHOT_FAILED", "Surface unavailable", null);
+            return;
+        }
+
+        int width = instance.player.getVideoWidth();
+        int height = instance.player.getVideoHeight();
+        if (width <= 0 || height <= 0) {
+            width = 1280;
+            height = 720;
+        }
+
+        final Bitmap bitmap = Bitmap.createBitmap(width, height,
+                                                  Bitmap.Config.ARGB_8888);
+        final Handler handler = new Handler(Looper.getMainLooper());
+
+        PixelCopy.request(surface, bitmap, copyResult -> {
+            if (copyResult == PixelCopy.SUCCESS) {
+                try {
+                    ByteArrayOutputStream stream = new ByteArrayOutputStream();
+                    bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream);
+                    byte[] pngData = stream.toByteArray();
+                    stream.close();
+
+                    java.util.Map<String, Object> args = new java.util.HashMap<>();
+                    args.put("data", pngData);
+                    instance.methodChannel.invokeMethod("_onSnapshot", args);
+                    result.success(null);
+                } catch (Exception e) {
+                    Log.e(TAG, "PixelCopy encode failed", e);
+                    result.error("SNAPSHOT_FAILED", e.getMessage(), null);
+                } finally {
+                    bitmap.recycle();
+                }
+                return;
+            }
+
+            bitmap.recycle();
+            if (remainingAttempts > 1) {
+                handler.postDelayed(
+                    () -> captureSnapshotWithPixelCopy(instance, result,
+                                                       remainingAttempts - 1),
+                    120);
+            } else {
+                result.error("SNAPSHOT_FAILED",
+                             "No frame available (PixelCopy=" + copyResult + ")",
+                             null);
+            }
+        }, handler);
     }
 
     /**
@@ -523,9 +586,19 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             case "stopFFmpegRecording":
             case "stopRecording": {
                 try {
+                    boolean stopped = true;
                     if (instance.ffmpegRecorder != null) {
-                        instance.ffmpegRecorder.stopRecording();
+                        stopped = instance.ffmpegRecorder.stopRecording();
                     }
+                    if (!stopped) {
+                        instance.methodChannel.invokeMethod("_onRecordingError",
+                                                            "No video packets were written");
+                        result.error("STOP_RECORDING_FAILED",
+                                     "Recording completed without video frames",
+                                     null);
+                        return true;
+                    }
+                    instance.methodChannel.invokeMethod("_onRecordingStopped", null);
                     result.success(null);
                 } catch (Exception e) {
                     Log.e(TAG, "Failed to stop recording", e);

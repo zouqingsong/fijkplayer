@@ -181,7 +181,11 @@ int packet_queue_drop_to_latest_keyframe(PacketQueue* q, int max_packets) {
     pthread_mutex_unlock(&q->mutex);
 
     if (dropped > 0) {
-        LOGW("Dropped %d stale video packets to latest keyframe (backlog guard)", dropped);
+        static int backlog_drop_log_count = 0;
+        backlog_drop_log_count++;
+        if (backlog_drop_log_count <= 10 || backlog_drop_log_count % 50 == 0) {
+            LOGI("Latency guard dropped %d stale video packets to latest keyframe", dropped);
+        }
     }
     return dropped;
 }

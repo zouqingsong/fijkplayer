@@ -471,12 +471,15 @@ static const int end = 9;
         
     } else if ([@"stopFFmpegRecording" isEqualToString:call.method]) {
         NSError *error = nil;
-        [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
-        if (error) {
+        BOOL stopped = [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
+        if (!stopped || error) {
+            NSString *msg = error ? error.localizedDescription : @"Failed to stop recording";
+            [_methodChannel invokeMethod:@"_onRecordingError" arguments:msg];
             result([FlutterError errorWithCode:@"STOP_RECORDING_FAILED"
-                                       message:error.localizedDescription
+                                       message:msg
                                        details:nil]);
         } else {
+            [_methodChannel invokeMethod:@"_onRecordingStopped" arguments:nil];
             result(@(0));
         }
         
@@ -508,12 +511,15 @@ static const int end = 9;
         
     } else if ([@"stopRecording" isEqualToString:call.method]) {
         NSError *error = nil;
-        [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
-        if (error) {
+        BOOL stopped = [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
+        if (!stopped || error) {
+            NSString *msg = error ? error.localizedDescription : @"Failed to stop recording";
+            [_methodChannel invokeMethod:@"_onRecordingError" arguments:msg];
             result([FlutterError errorWithCode:@"STOP_RECORDING_FAILED"
-                                       message:error.localizedDescription
+                                       message:msg
                                        details:nil]);
         } else {
+            [_methodChannel invokeMethod:@"_onRecordingStopped" arguments:nil];
             result(@(0));
         }
         

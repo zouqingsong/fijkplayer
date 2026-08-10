@@ -750,22 +750,39 @@ int ff_demuxer_seek(FFDemuxer* demuxer, int stream_index, int64_t timestamp_us, 
     
     int ret;
     
-    // For seeking to start, use byte-level seek + avformat_seek_file (ijkplayer approach)
     if (timestamp_us == 0) {
-        LOGI("Using byte-level seek to beginning (ijkplayer approach)");
-        // First, do a byte-level seek to position 0 in the file
-        // This bypasses the format layer and goes directly to file I/O
-        if (demuxer->format_ctx->pb) {
-            int64_t pos = avio_seek(demuxer->format_ctx->pb, 0, SEEK_SET);
-            LOGI("avio_seek to 0 returned: %lld", (long long)pos);
+        LOGI("Seeking to beginning using timestamp-based fallback chain");
+        // 1) Preferred: keyframe seek to start in stream timebase.
+        ret = av_seek_frame(demuxer->format_ctx, stream_index, 0,
+                            AVSEEK_FLAG_BACKWARD);
+        // 2) Fallback: seek on global timeline.
+        if (ret < 0) {
+            ret = av_seek_frame(demuxer->format_ctx, -1, 0,
+                                AVSEEK_FLAG_BACKWARD);
         }
-        // Then use avformat_seek_file to reset the format context state
-        // Use AVSEEK_FLAG_BYTE (1) to force byte-based seeking
-        ret = avformat_seek_file(demuxer->format_ctx, stream_index, 
-                                 0, 0, 0, AVSEEK_FLAG_BYTE);
+        // 3) Last resort for containers requiring seek_file semantics.
+        if (ret < 0) {
+            ret = avformat_seek_file(demuxer->format_ctx, stream_index,
+                                     INT64_MIN, 0, INT64_MAX,
+                                     AVSEEK_FLAG_BACKWARD);
+        }
+        // 4) Extremely conservative fallback: byte seek on the pb.
+        if (ret < 0 && demuxer->format_ctx->pb) {
+            int64_t pos = avio_seek(demuxer->format_ctx->pb, 0, SEEK_SET);
+            LOGI("avio_seek fallback to 0 returned: %lld", (long long)pos);
+            if (pos >= 0) {
+                ret = 0;
+            }
+        }
     } else {
-        // For non-zero seeks, use av_seek_frame with provided flags
-        ret = av_seek_frame(demuxer->format_ctx, stream_index, seek_target, flags);
+        // For non-zero seeks, use timestamp seek with backward preference.
+        ret = av_seek_frame(demuxer->format_ctx, stream_index, seek_target,
+                            flags | AVSEEK_FLAG_BACKWARD);
+        if (ret < 0) {
+            ret = avformat_seek_file(demuxer->format_ctx, stream_index,
+                                     INT64_MIN, seek_target, INT64_MAX,
+                                     flags | AVSEEK_FLAG_BACKWARD);
+        }
     }
     
     if (ret < 0) {
@@ -784,6 +801,13 @@ int ff_demuxer_seek(FFDemuxer* demuxer, int stream_index, int64_t timestamp_us, 
         av_bsf_flush(demuxer->h264_bsf);
         LOGI("🔄 H.264 BSF flushed after seek (reset state for discontinuous stream)");
     }
+
+    // Clear EOF markers so reads can continue after seeking from end-of-file.
+    if (demuxer->format_ctx->pb) {
+        demuxer->format_ctx->pb->eof_reached = 0;
+        demuxer->format_ctx->pb->error = 0;
+    }
+    demuxer->is_active = true;
     
     LOGI("Seek completed successfully");
     return 0;

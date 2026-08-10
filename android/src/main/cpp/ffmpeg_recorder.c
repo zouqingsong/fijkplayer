@@ -24,6 +24,7 @@ typedef struct {
     bool stop_requested;
     char *rtsp_url;
     char *output_path;
+    int written_packets;
 } RecorderContext;
 
 static RecorderContext g_recorder = {0};
@@ -34,6 +35,8 @@ static void* recording_thread_func(void* arg) {
     RecorderContext *ctx = (RecorderContext*)arg;
     AVPacket pkt;
     int64_t start_pts = -1;
+    int64_t start_dts = -1;
+    bool got_keyframe = false;
     int ret;
 
     LOGI("Recording thread started");
@@ -54,18 +57,39 @@ static void* recording_thread_func(void* arg) {
             AVStream *in_stream = ctx->input_ctx->streams[ctx->video_stream_index];
             AVStream *out_stream = ctx->output_ctx->streams[0];
 
-            // Initialize start PTS
-            if (start_pts == -1) {
-                start_pts = pkt.pts;
+            // Start recording from the first keyframe to ensure decodable output.
+            if (!got_keyframe) {
+                if (pkt.flags & AV_PKT_FLAG_KEY) {
+                    got_keyframe = true;
+                    start_pts = pkt.pts;
+                    start_dts = pkt.dts;
+                    LOGI("Got first keyframe; start_pts=%lld, start_dts=%lld",
+                         (long long)start_pts, (long long)start_dts);
+                } else {
+                    av_packet_unref(&pkt);
+                    continue;
+                }
             }
 
-            // Adjust timestamps
-            pkt.pts = av_rescale_q_rnd(pkt.pts - start_pts, in_stream->time_base, 
-                                       out_stream->time_base, 
+            // Normalize timestamps relative to first keyframe.
+            int64_t rel_pts = pkt.pts;
+            int64_t rel_dts = pkt.dts;
+            if (start_pts != AV_NOPTS_VALUE && rel_pts != AV_NOPTS_VALUE) {
+                rel_pts -= start_pts;
+            }
+            if (start_dts != AV_NOPTS_VALUE && rel_dts != AV_NOPTS_VALUE) {
+                rel_dts -= start_dts;
+            }
+
+            pkt.pts = av_rescale_q_rnd(rel_pts, in_stream->time_base,
+                                       out_stream->time_base,
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            pkt.dts = av_rescale_q_rnd(pkt.dts - start_pts, in_stream->time_base, 
-                                       out_stream->time_base, 
+            pkt.dts = av_rescale_q_rnd(rel_dts, in_stream->time_base,
+                                       out_stream->time_base,
                                        AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+            if (pkt.pts != AV_NOPTS_VALUE && pkt.dts != AV_NOPTS_VALUE && pkt.pts < pkt.dts) {
+                pkt.pts = pkt.dts;
+            }
             pkt.duration = av_rescale_q(pkt.duration, in_stream->time_base, out_stream->time_base);
             pkt.stream_index = 0;
             pkt.pos = -1;
@@ -77,6 +101,7 @@ static void* recording_thread_func(void* arg) {
                 av_packet_unref(&pkt);
                 break;
             }
+            ctx->written_packets++;
         }
 
         av_packet_unref(&pkt);
@@ -102,6 +127,8 @@ Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStartRecording(
     const char *output_path_str = (*env)->GetStringUTFChars(env, output_path, NULL);
 
     LOGI("Starting FFmpeg recording: %s -> %s", rtsp_url_str, output_path_str);
+    g_recorder.written_packets = 0;
+
 
     // Store paths
     g_recorder.rtsp_url = strdup(rtsp_url_str);
@@ -212,8 +239,11 @@ Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStartRecording(
         }
     }
 
-    // Write header
-    ret = avformat_write_header(g_recorder.output_ctx, NULL);
+    // Write header with faststart for better compatibility.
+    AVDictionary *muxer_opts = NULL;
+    av_dict_set(&muxer_opts, "movflags", "faststart", 0);
+    ret = avformat_write_header(g_recorder.output_ctx, &muxer_opts);
+    av_dict_free(&muxer_opts);
     if (ret < 0) {
         LOGE("Failed to write header: %s", av_err2str(ret));
         if (!(g_recorder.output_ctx->oformat->flags & AVFMT_NOFILE)) {
@@ -276,7 +306,11 @@ Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStopRecording(JNIEnv *env, j
     pthread_mutex_lock(&g_mutex);
 
     // Write trailer
+    bool has_video = g_recorder.written_packets > 0;
     if (g_recorder.output_ctx) {
+        if (g_recorder.output_ctx->pb) {
+            avio_flush(g_recorder.output_ctx->pb);
+        }
         av_write_trailer(g_recorder.output_ctx);
         
         // Close output file
@@ -306,10 +340,15 @@ Java_com_befovy_fijkplayer_FijkFFmpegRecorder_nativeStopRecording(JNIEnv *env, j
 
     g_recorder.is_recording = false;
     g_recorder.video_stream_index = -1;
+    g_recorder.written_packets = 0;
 
-    LOGI("Recording stopped successfully");
+    if (!has_video) {
+        LOGE("Recording stopped but no video packets were written");
+    } else {
+        LOGI("Recording stopped successfully");
+    }
     pthread_mutex_unlock(&g_mutex);
-    return JNI_TRUE;
+    return has_video ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL

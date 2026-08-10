@@ -170,7 +170,12 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
         var snapShot = _snapShot;
         if (snapShot != null) {
           if (img is Map) {
-            snapShot.complete(img['data']);
+            final data = img['data'];
+            if (data is Uint8List) {
+              snapShot.complete(data);
+            } else {
+              snapShot.completeError(StateError("snapshot data unavailable"));
+            }
           } else {
             snapShot.completeError(UnsupportedError("snapshot"));
           }
@@ -320,7 +325,14 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     }
     snapShot = Completer<Uint8List>();
     _snapShot = snapShot;
-    _channel.invokeMethod("snapshot");
+    try {
+      await _channel.invokeMethod("snapshot");
+    } catch (e) {
+      if (!snapShot.isCompleted) {
+        snapShot.completeError(e);
+      }
+      _snapShot = null;
+    }
     return snapShot.future;
   }
 
@@ -342,27 +354,8 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// await player.stopRecording();
   /// ```
   Future<void> startRecording(String path) async {
-    await _nativeSetup.future;
-    if (_isRecording) {
-      return Future.error(StateError("Recording is already in progress"));
-    }
-    if (!isPlayable()) {
-      return Future.error(StateError("Player must be in playable state to start recording"));
-    }
-    FijkLog.i("$this startRecording to $path");
-    
-    var recording = Completer<void>();
-    _recording = recording;
-    
-    try {
-      await _channel.invokeMethod("startRecording", <String, dynamic>{'path': path});
-      await recording.future;
-      FijkLog.i("$this recording started successfully");
-    } catch (e) {
-      _recording = null;
-      _isRecording = false;
-      rethrow;
-    }
+    // Keep legacy API name but route to FFmpeg implementation.
+    await startFFmpegRecording(path);
   }
 
   /// Stop video recording
@@ -375,14 +368,8 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// await player.stopRecording();
   /// ```
   Future<void> stopRecording() async {
-    await _nativeSetup.future;
-    if (!_isRecording) {
-      return Future.error(StateError("No recording in progress"));
-    }
-    FijkLog.i("$this stopRecording");
-    await _channel.invokeMethod("stopRecording");
-    _recording = null;
-    _isRecording = false;
+    // Keep legacy API name but route to FFmpeg implementation.
+    await stopFFmpegRecording();
   }
 
   /// Start FFmpeg-based video recording to file
@@ -602,23 +589,48 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// [fijkstate en](https://fijkplayer.befovy.com/docs/en/fijkstate.html) for details
   Future<void> start() async {
     await _nativeSetup.future;
-    if (state == FijkState.initialized) {
-      _callId += 1;
-      int cid = _callId;
-      FijkLog.i("$this invoke prepareAsync and start #$cid");
-      await setOption(FijkOption.playerCategory, "start-on-prepared", 1);
-      await _channel.invokeMethod("prepareAsync");
-      FijkLog.i("$this invoke prepareAsync and start #$cid -> done");
-    } else if (state == FijkState.asyncPreparing ||
-        state == FijkState.prepared ||
-        state == FijkState.paused ||
-        state == FijkState.started ||
-        value.state == FijkState.completed) {
-      FijkLog.i("$this invoke start");
-      await _channel.invokeMethod("start");
-    } else {
-      FijkLog.e("$this invoke start invalid state:$state");
-      return Future.error(StateError("call start on invalid state $state"));
+    try {
+      if (state == FijkState.initialized) {
+        _callId += 1;
+        int cid = _callId;
+        FijkLog.i("$this invoke prepareAsync and start #$cid");
+        await setOption(FijkOption.playerCategory, "start-on-prepared", 1);
+        await _channel.invokeMethod("prepareAsync");
+        // Native backend currently treats setOption as a compatibility no-op,
+        // so start-on-prepared is not guaranteed. Explicitly start once
+        // preparation reaches a playable state.
+        int waitCount = 0;
+        while (waitCount < 300 &&
+            state != FijkState.prepared &&
+            state != FijkState.started &&
+            state != FijkState.error &&
+            state != FijkState.end) {
+          await Future.delayed(Duration(milliseconds: 20));
+          waitCount++;
+        }
+        if (state == FijkState.prepared) {
+          await _channel.invokeMethod("start");
+        }
+        FijkLog.i("$this invoke prepareAsync and start #$cid -> done");
+      } else if (state == FijkState.asyncPreparing ||
+          state == FijkState.prepared ||
+          state == FijkState.paused ||
+          state == FijkState.started ||
+          value.state == FijkState.completed) {
+        FijkLog.i("$this invoke start");
+        await _channel.invokeMethod("start");
+      } else {
+        FijkLog.e("$this invoke start invalid state:$state");
+        return Future.error(StateError("call start on invalid state $state"));
+      }
+    } on PlatformException catch (e) {
+      // During fast widget teardown/recreate, stale async calls may arrive after
+      // native player release. Ignore this race instead of crashing app flow.
+      if (e.code == "PLAYER_NOT_FOUND") {
+        FijkLog.w("$this start ignored on released native player");
+        return;
+      }
+      rethrow;
     }
   }
 

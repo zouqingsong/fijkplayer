@@ -18,8 +18,10 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <signal.h>
 #include <errno.h>
 #include <math.h>
+#include <ctype.h>
 #include <android/log.h>
 #include <android/native_window_jni.h>
 
@@ -112,6 +114,61 @@ static void* audio_decoder_thread_func(void* arg);
 static void* audio_playback_thread_func(void* arg);
 static void post_event(NativePlayer* player, PlayerEvent event, int arg1, int arg2);
 
+static bool worker_thread_alive(pthread_t tid) {
+    if (!tid) {
+        return false;
+    }
+    int rc = pthread_kill(tid, 0);
+    return rc == 0;
+}
+
+static bool starts_with_ignore_case(const char* str, const char* prefix) {
+    if (!str || !prefix) {
+        return false;
+    }
+
+    while (*prefix) {
+        if (*str == '\0') {
+            return false;
+        }
+        if (tolower((unsigned char)*str) != tolower((unsigned char)*prefix)) {
+            return false;
+        }
+        str++;
+        prefix++;
+    }
+    return true;
+}
+
+static bool is_live_latency_source(const char* url) {
+    if (!url || url[0] == '\0') {
+        return false;
+    }
+
+    // Local paths/files are treated as VOD and should never use live latency guards.
+    if (starts_with_ignore_case(url, "file://") ||
+        starts_with_ignore_case(url, "content://") ||
+        url[0] == '/') {
+        return false;
+    }
+
+    // Sources without URI scheme are treated as local/relative files.
+    if (!strstr(url, "://")) {
+        return false;
+    }
+
+    if (starts_with_ignore_case(url, "rtsp://") ||
+        starts_with_ignore_case(url, "rtsps://") ||
+        starts_with_ignore_case(url, "rtmp://") ||
+        starts_with_ignore_case(url, "rtmps://") ||
+        starts_with_ignore_case(url, "udp://")) {
+        return true;
+    }
+
+    // HLS network streams should also use live-optimized behavior.
+    return strstr(url, ".m3u8") != NULL || strstr(url, ".M3U8") != NULL;
+}
+
 NativePlayer* native_player_create(JNIEnv* env, jobject thiz) {
     NativePlayer* player = (NativePlayer*)calloc(1, sizeof(NativePlayer));
     if (!player) {
@@ -155,6 +212,7 @@ NativePlayer* native_player_create(JNIEnv* env, jobject thiz) {
     player->options.max_video_height = 0;
     player->options.enable_audio = 1;      // Audio enabled by default
     player->options.max_latency_ms = 0;     // No latency constraint by default
+    player->options.playback_mode = 2;      // Default to VOD_OPTIMIZED
     
     LOGD("Native player created");
     return player;
@@ -297,7 +355,8 @@ int native_player_prepare_async(NativePlayer* player) {
     FFDemuxerOptions demux_opts = {0};
     demux_opts.timeout_us = 10000000;  // 10 seconds
     demux_opts.enable_tcp = true;
-    demux_opts.enable_lowdelay = (player->options.playback_mode == 0);  // Only for LIVE_LOW_LATENCY
+    bool live_source = is_live_latency_source(player->data_source);
+    demux_opts.enable_lowdelay = (player->options.playback_mode == 0 && live_source);  // Only live low-latency streams
     demux_opts.playback_mode = player->options.playback_mode;
     
     // Open media with mode-specific FFmpeg options
@@ -558,6 +617,53 @@ int native_player_start(NativePlayer* player) {
         LOGE("Cannot start in state %d", player->state);
         pthread_mutex_unlock(&player->state_mutex);
         return -1;
+    }
+
+    // If we're paused, resume existing worker threads. If any worker exited,
+    // restart only the missing workers so start() from paused never becomes
+    // a no-op state flip.
+    if (player->state == PLAYER_STATE_PAUSED) {
+        bool demuxer_alive = worker_thread_alive(player->demuxer_thread);
+        bool decoder_alive = worker_thread_alive(player->decoder_thread);
+        bool audio_decoder_alive = worker_thread_alive(player->audio_decoder_thread);
+        bool audio_playback_alive = worker_thread_alive(player->audio_playback_thread);
+
+        player->paused = false;
+        player->stop_requested = false;
+        player->state = PLAYER_STATE_STARTED;
+
+        // Ensure queues are active in case a previous stop/reset aborted them.
+        packet_queue_start(&player->videoq);
+        packet_queue_start(&player->audioq);
+
+        if (!demuxer_alive) {
+            pthread_create(&player->demuxer_thread, NULL, demuxer_thread_func, player);
+            LOGW("Restarted demuxer thread from paused state");
+        }
+        if (!decoder_alive) {
+            pthread_create(&player->decoder_thread, NULL, decoder_thread_func, player);
+            LOGW("Restarted decoder thread from paused state");
+        }
+
+        if (player->audio_decoder && !audio_decoder_alive) {
+            if (audio_decoder_start(player->audio_decoder) == 0) {
+                pthread_create(&player->audio_decoder_thread, NULL, audio_decoder_thread_func, player);
+                LOGW("Restarted audio decoder thread from paused state");
+            } else {
+                LOGW("Failed to restart audio decoder thread from paused state");
+            }
+        }
+
+        if (player->audio_queue && player->audio_renderer && !audio_playback_alive) {
+            pthread_create(&player->audio_playback_thread, NULL, audio_playback_thread_func, player);
+            LOGW("Restarted audio playback thread from paused state");
+        }
+
+        pthread_mutex_unlock(&player->state_mutex);
+        post_event(player, PLAYER_EVENT_STARTED, 0, 0);
+        LOGD("Playback resumed via start() (demuxer=%d, decoder=%d)",
+             demuxer_alive ? 1 : 0, decoder_alive ? 1 : 0);
+        return 0;
     }
     
     player->stop_requested = false;
@@ -1041,17 +1147,29 @@ void native_player_release(NativePlayer* player) {
     
     // Release audio renderer
     if (player->audio_renderer && player->jvm) {
-        JNIEnv* env;
-        (*player->jvm)->AttachCurrentThread(player->jvm, &env, NULL);
+        JNIEnv* env = NULL;
+        bool did_attach = false;
+        jint env_status = (*player->jvm)->GetEnv(player->jvm, (void**)&env, JNI_VERSION_1_6);
+        if (env_status == JNI_EDETACHED) {
+            if ((*player->jvm)->AttachCurrentThread(player->jvm, &env, NULL) != JNI_OK) {
+                LOGE("Failed to attach thread to JVM for audio renderer release");
+                env = NULL;
+            } else {
+                did_attach = true;
+            }
+        }
         
-        jclass renderer_class = (*env)->GetObjectClass(env, player->audio_renderer);
-        jmethodID release_method = (*env)->GetMethodID(env, renderer_class, "release", "()V");
-        (*env)->CallVoidMethod(env, player->audio_renderer, release_method);
-        
-        (*env)->DeleteGlobalRef(env, player->audio_renderer);
+        if (env) {
+            jclass renderer_class = (*env)->GetObjectClass(env, player->audio_renderer);
+            jmethodID release_method = (*env)->GetMethodID(env, renderer_class, "release", "()V");
+            (*env)->CallVoidMethod(env, player->audio_renderer, release_method);
+            (*env)->DeleteGlobalRef(env, player->audio_renderer);
+        }
         player->audio_renderer = NULL;
         
-        (*player->jvm)->DetachCurrentThread(player->jvm);
+        if (did_attach) {
+            (*player->jvm)->DetachCurrentThread(player->jvm);
+        }
         LOGI("🔊 AudioRenderer released");
     }
     
@@ -1065,10 +1183,23 @@ void native_player_release(NativePlayer* player) {
     
     // Release Java references
     if (player->java_obj && player->jvm) {
-        JNIEnv* env;
-        (*player->jvm)->AttachCurrentThread(player->jvm, &env, NULL);
-        (*env)->DeleteGlobalRef(env, player->java_obj);
-        (*player->jvm)->DetachCurrentThread(player->jvm);
+        JNIEnv* env = NULL;
+        bool did_attach = false;
+        jint env_status = (*player->jvm)->GetEnv(player->jvm, (void**)&env, JNI_VERSION_1_6);
+        if (env_status == JNI_EDETACHED) {
+            if ((*player->jvm)->AttachCurrentThread(player->jvm, &env, NULL) == JNI_OK) {
+                did_attach = true;
+            } else {
+                env = NULL;
+                LOGE("Failed to attach thread to JVM for java_obj release");
+            }
+        }
+        if (env) {
+            (*env)->DeleteGlobalRef(env, player->java_obj);
+        }
+        if (did_attach) {
+            (*player->jvm)->DetachCurrentThread(player->jvm);
+        }
     }
     
     if (player->data_source) {
@@ -1303,7 +1434,8 @@ static void* demuxer_thread_func(void* arg) {
     // accumulate latency over time. Derived from the configured max latency budget
     // (~1 frame per 33ms). When exceeded, drop stale packets to the newest keyframe.
     int video_drop_threshold = 0;
-    if (player->options.playback_mode == 0 && player->options.enable_frame_drop) {
+    bool live_source = is_live_latency_source(player->data_source);
+    if (player->options.playback_mode == 0 && player->options.enable_frame_drop && live_source) {
         int budget_ms = player->options.max_latency_ms > 0
                             ? player->options.max_latency_ms : 200;
         video_drop_threshold = budget_ms / 33;
@@ -1412,12 +1544,49 @@ static void* decoder_thread_func(void* arg) {
             }
         }
         
-        // Send packet to MediaCodec (non-blocking)
-        ret = mediacodec_decoder_send_packet(player->decoder, packet, 0);
-        ff_packet_free(packet);  // Free after send
-        
-        if (ret < 0) {
+        // Send packet to MediaCodec with backpressure handling.
+        // -EAGAIN means decoder input is temporarily full; drain output and retry
+        // instead of dropping this packet and logging a hard error.
+        int send_attempts = 0;
+        while (1) {
+            ret = mediacodec_decoder_send_packet(player->decoder, packet,
+                                                 send_attempts == 0 ? 0 : 1000);
+            if (ret == 0) {
+                break;
+            }
+
+            if (ret == -EAGAIN) {
+                DecodedFrame* drain_frame = NULL;
+                int drain_ret = mediacodec_decoder_receive_frame(player->decoder,
+                                                                 &drain_frame, 0);
+                if (drain_ret == 0 && drain_frame) {
+                    total_frames_received++;
+                    player->current_position = drain_frame->pts;
+                    mediacodec_decoder_free_frame(drain_frame);
+                }
+
+                send_attempts++;
+                if (send_attempts >= 8) {
+                    static int send_backpressure_log_count = 0;
+                    if (send_backpressure_log_count++ < 20 ||
+                        send_backpressure_log_count % 100 == 0) {
+                        LOGW("⚠️ Decoder backpressure on packet #%d (-EAGAIN), dropping after %d retries",
+                             video_packet_count, send_attempts);
+                    }
+                    break;
+                }
+
+                usleep(1000);  // 1ms backoff before retrying the same packet
+                continue;
+            }
+
             LOGE("❌ Send packet #%d failed: %d", video_packet_count, ret);
+            break;
+        }
+
+        ff_packet_free(packet);  // Always free after send handling path
+
+        if (ret < 0) {
             continue;
         }
         
@@ -1473,8 +1642,7 @@ static void* decoder_thread_func(void* arg) {
             
             player->last_video_pts = frame->pts;
             
-            if (frame->data[0]) free(frame->data[0]);
-            free(frame);
+            mediacodec_decoder_free_frame(frame);
             
             // Frame pacing: only throttle for VOD / audio-synced playback. In
             // LIVE_LOW_LATENCY mode (mode 0) there is no audio clock to sync to, and
