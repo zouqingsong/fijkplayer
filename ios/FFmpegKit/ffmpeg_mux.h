@@ -32,7 +32,7 @@
 
 #include "libavutil/dict.h"
 #include "libavutil/fifo.h"
-#include "libavutil/thread.h"
+#include "libavutil/threadmessage.h"
 
 typedef struct MuxStream {
     OutputStream ost;

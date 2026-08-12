@@ -47,6 +47,8 @@
 #include "libavutil/thread.h"
 #include "libavutil/threadmessage.h"
 
+#include <pthread.h>
+
 #include "libswresample/swresample.h"
 
 // deprecated features

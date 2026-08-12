@@ -18,13 +18,14 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "libavutil/avassert.h"
 #include "libavutil/error.h"
 #include "libavutil/fifo.h"
 #include "libavutil/intreadwrite.h"
 #include "libavutil/mem.h"
-#include "libavutil/thread.h"
+#include "libavutil/threadmessage.h"
 
 #include "objpool.h"
 #include "thread_queue.h"

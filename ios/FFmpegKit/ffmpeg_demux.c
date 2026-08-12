@@ -31,7 +31,6 @@
 #include "libavutil/pixdesc.h"
 #include "libavutil/time.h"
 #include "libavutil/timestamp.h"
-#include "libavutil/thread.h"
 #include "libavutil/threadmessage.h"
 
 #include "libavcodec/packet.h"
