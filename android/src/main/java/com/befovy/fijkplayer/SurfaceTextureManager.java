@@ -1,13 +1,10 @@
 package com.befovy.fijkplayer;
 
 import android.graphics.SurfaceTexture;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.Log;
 import android.view.Surface;
 import io.flutter.view.TextureRegistry;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Manages SurfaceTexture lifecycle for MediaCodec rendering.
@@ -23,41 +20,6 @@ public class SurfaceTextureManager {
     private Surface surface;
     private TextureRegistry.SurfaceTextureEntry textureEntry;
     private AtomicBoolean isReleased = new AtomicBoolean(false);
-    private Handler callbackHandler;
-    private AtomicLong frameCount = new AtomicLong(0);
-    private long lastFrameTime = 0;
-
-    private final SurfaceTexture.OnFrameAvailableListener frameListener =
-        new SurfaceTexture.OnFrameAvailableListener() {
-            @Override
-            public void onFrameAvailable(SurfaceTexture st) {
-                if (isReleased.get() || textureEntry == null) {
-                    Log.w(TAG, "📺 onFrameAvailable called but IGNORED (released=" + isReleased.get() + ", textureEntry=" + textureEntry + ")");
-                    return;
-                }
-
-                long count = frameCount.incrementAndGet();
-                
-                // LOG IMMEDIATELY to confirm callback is firing
-                long now = System.nanoTime() / 1000000;
-                long interval = (lastFrameTime > 0) ? (now - lastFrameTime) : 0;
-                lastFrameTime = now;
-                
-                // Disabled verbose logging - uncomment for debugging
-                // if (count <= 30 || count % 60 == 0) {
-                //     Log.i(TAG, "📺 onFrameAvailable called! Frame #" + count + " (interval=" + interval + "ms, thread=" + Thread.currentThread().getName() + ")");
-                // }
-                
-                // DO NOT call updateTexImage() here - causes crash!
-                // Flutter's engine automatically calls it on the raster thread (which has GL context)
-                // Calling it here from main thread crashes with "invalid current EGLDisplay"
-                
-                // The SurfaceTexture buffer is limited (1-2 frames by default).
-                // After first frame fills buffer, onFrameAvailable stops being called
-                // until Flutter consumes frames via updateTexImage().
-                // Flutter's position timer (50ms) triggers rebuilds → updateTexImage().
-            }
-        };
 
     /**
      * Initialize the SurfaceTextureManager with a Flutter SurfaceTextureEntry
@@ -72,17 +34,19 @@ public class SurfaceTextureManager {
         // Don't detach - Flutter needs GL context for rendering
         // We'll handle buffer management in native code instead
 
-        // Set frame listener on main thread with Looper
-        callbackHandler = new Handler(Looper.getMainLooper());
-        surfaceTexture.setOnFrameAvailableListener(frameListener, callbackHandler);
-        
-        // REMOVED: setMaxBufferedFrames() - not available before API 35
-        // Instead, Flutter's 50ms timer ensures frames are consumed fast enough
+        // Intentionally not calling setOnFrameAvailableListener here: a
+        // SurfaceTexture only supports one listener at a time, and this
+        // entry's Flutter engine already installed its own listener (which
+        // schedules the vsync-timed updateTexImage() pull) when the texture
+        // was created. Overriding it here starved the engine of that signal,
+        // so frames only got pulled as a side effect of unrelated repaints
+        // (e.g. the position-update timer), adding latency and capping the
+        // effective frame rate.
 
         // Create Surface for MediaCodec
         surface = new Surface(surfaceTexture);
 
-        Log.i(TAG, "SurfaceTextureManager initialized - will consume frames in onFrameAvailable");
+        Log.i(TAG, "SurfaceTextureManager initialized");
     }
 
     /**
@@ -111,7 +75,7 @@ public class SurfaceTextureManager {
         // Note: Don't release surfaceTexture - Flutter manages it
         surfaceTexture = null;
         
-        Log.i(TAG, "SurfaceTextureManager released. Total frames: " + frameCount.get());
+        Log.i(TAG, "SurfaceTextureManager released");
     }
 
     /**

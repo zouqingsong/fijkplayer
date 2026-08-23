@@ -133,6 +133,13 @@ int mediacodec_decoder_configure(MediaCodecDecoder* decoder, DecoderConfig* conf
                               config->extradata, config->extradata_size);
     }
     
+    // Hint the decoder to minimize internal reordering/buffering delay for
+    // live low-latency streaming. Ignored by decoders that don't support it
+    // (raw string key used since AMEDIAFORMAT_KEY_LOW_LATENCY isn't defined
+    // in older NDK headers); vendor decoders that do (e.g. Qualcomm c2.qti.*)
+    // can otherwise hold back ~10-20+ frames for B-frame reordering.
+    AMediaFormat_setInt32(decoder->format, "low-latency", 1);
+    
     // Configure codec (with surface for direct rendering if provided)
     media_status_t status = AMediaCodec_configure(decoder->codec, decoder->format,
                                                   (ANativeWindow*)config->surface, NULL, 0);
