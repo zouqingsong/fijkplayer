@@ -88,7 +88,6 @@
 #include "libavutil/parseutils.h"
 #include "libavutil/pixdesc.h"
 #include "libavutil/samplefmt.h"
-#include "libavutil/thread.h"
 #include "libavutil/threadmessage.h"
 #include "libavutil/time.h"
 #include "libavutil/timestamp.h"

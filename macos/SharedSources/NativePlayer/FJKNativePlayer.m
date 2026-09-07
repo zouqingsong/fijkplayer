@@ -72,6 +72,105 @@
 
 @end
 
+static BOOL fjkPacketHasAnnexBStartCode(const uint8_t *data, int size) {
+    if (!data || size < 4) return NO;
+    return (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x01) ||
+           (data[0] == 0x00 && data[1] == 0x00 && data[2] == 0x00 && data[3] == 0x01);
+}
+
+static int fjkDetectLengthPrefixedNaluSizeField(const uint8_t *data, int size) {
+    if (!data || size < 4) return 0;
+
+    const int candidates[] = {4, 2, 1};
+    for (int c = 0; c < 3; c++) {
+        int naluLenSize = candidates[c];
+        int offset = 0;
+        int parsed = 0;
+
+        while (offset + naluLenSize <= size) {
+            uint32_t naluSize = 0;
+            for (int i = 0; i < naluLenSize; i++) {
+                naluSize = (naluSize << 8) | data[offset + i];
+            }
+            offset += naluLenSize;
+            if (naluSize == 0 || offset + (int)naluSize > size) {
+                parsed = 0;
+                break;
+            }
+            offset += (int)naluSize;
+            parsed++;
+            if (offset == size) {
+                return parsed > 0 ? naluLenSize : 0;
+            }
+        }
+    }
+    return 0;
+}
+
+static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
+    if (!pkt || !pkt->data || pkt->size < 4) return 0;
+
+    if (fjkPacketHasAnnexBStartCode(pkt->data, pkt->size)) {
+        return 0;
+    }
+
+    int naluLenSize = fjkDetectLengthPrefixedNaluSizeField(pkt->data, pkt->size);
+    if (naluLenSize == 0) {
+        return 0;
+    }
+
+    int offset = 0;
+    int outSize = 0;
+    while (offset + naluLenSize <= pkt->size) {
+        uint32_t naluSize = 0;
+        for (int i = 0; i < naluLenSize; i++) {
+            naluSize = (naluSize << 8) | pkt->data[offset + i];
+        }
+        offset += naluLenSize;
+        if (naluSize == 0 || offset + (int)naluSize > pkt->size) {
+            return AVERROR_INVALIDDATA;
+        }
+        outSize += 4 + (int)naluSize;
+        offset += (int)naluSize;
+    }
+
+    AVPacket converted;
+    av_init_packet(&converted);
+    int ret = av_new_packet(&converted, outSize);
+    if (ret < 0) {
+        return ret;
+    }
+
+    offset = 0;
+    int writeOffset = 0;
+    while (offset + naluLenSize <= pkt->size) {
+        uint32_t naluSize = 0;
+        for (int i = 0; i < naluLenSize; i++) {
+            naluSize = (naluSize << 8) | pkt->data[offset + i];
+        }
+        offset += naluLenSize;
+
+        converted.data[writeOffset + 0] = 0x00;
+        converted.data[writeOffset + 1] = 0x00;
+        converted.data[writeOffset + 2] = 0x00;
+        converted.data[writeOffset + 3] = 0x01;
+        memcpy(converted.data + writeOffset + 4, pkt->data + offset, naluSize);
+
+        writeOffset += 4 + (int)naluSize;
+        offset += (int)naluSize;
+    }
+
+    ret = av_packet_copy_props(&converted, pkt);
+    if (ret < 0) {
+        av_packet_unref(&converted);
+        return ret;
+    }
+
+    av_packet_unref(pkt);
+    av_packet_move_ref(pkt, &converted);
+    return 0;
+}
+
 @implementation FJKNativePlayer
 
 #pragma mark - Lifecycle
@@ -849,17 +948,48 @@
     memcpy(avpkt->data, packet->data, packet->size);
     avpkt->pts = packet->pts;
     avpkt->dts = packet->dts;
-    
+
+    enum AVCodecID codecId = _swDecoderCtx ? _swDecoderCtx->codec_id : AV_CODEC_ID_NONE;
+
     // Apply BSF filter if available (AVCC -> Annex B)
     if (_bsfCtx) {
         int bsfRet = av_bsf_send_packet(_bsfCtx, avpkt);
         if (bsfRet < 0) {
-            av_packet_free(&avpkt);
-            return;
+            static int bsfSendErrCount = 0;
+            if (bsfSendErrCount++ < 5) {
+                NSLog(@"[FJKNativePlayer] BSF send error: %d, trying manual Annex-B conversion", bsfRet);
+            }
+            if (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264) {
+                int convertRet = fjkConvertLengthPrefixedToAnnexB(avpkt);
+                if (convertRet < 0) {
+                    av_packet_free(&avpkt);
+                    return;
+                }
+            }
+        } else {
+            // Receive filtered packet (reuse avpkt)
+            bsfRet = av_bsf_receive_packet(_bsfCtx, avpkt);
+            if (bsfRet < 0) {
+                static int bsfRecvErrCount = 0;
+                if (bsfRecvErrCount++ < 5) {
+                    NSLog(@"[FJKNativePlayer] BSF receive error: %d, trying manual Annex-B conversion", bsfRet);
+                }
+                if (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264) {
+                    int convertRet = fjkConvertLengthPrefixedToAnnexB(avpkt);
+                    if (convertRet < 0) {
+                        av_packet_free(&avpkt);
+                        return;
+                    }
+                } else {
+                    av_packet_free(&avpkt);
+                    return;
+                }
+            }
         }
-        // Receive filtered packet (reuse avpkt)
-        bsfRet = av_bsf_receive_packet(_bsfCtx, avpkt);
-        if (bsfRet < 0) {
+    } else if (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264) {
+        // Fallback for local MP4/MOV camera recordings when BSF is unavailable.
+        int convertRet = fjkConvertLengthPrefixedToAnnexB(avpkt);
+        if (convertRet < 0) {
             av_packet_free(&avpkt);
             return;
         }

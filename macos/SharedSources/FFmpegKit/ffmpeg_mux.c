@@ -31,7 +31,7 @@
 #include "libavutil/log.h"
 #include "libavutil/mem.h"
 #include "libavutil/timestamp.h"
-#include "libavutil/thread.h"
+#include "libavutil/threadmessage.h"
 
 #include "libavcodec/packet.h"
 
