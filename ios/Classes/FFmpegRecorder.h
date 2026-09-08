@@ -32,6 +32,13 @@ NS_ASSUME_NONNULL_BEGIN
                        outputPath:(NSString *)outputPath 
                             error:(NSError **)error;
 
+- (BOOL)startPreRollWithRtspUrl:(NSString *)rtspUrl
+                     outputPath:(NSString *)outputPath
+                 preRollSeconds:(NSInteger)preRollSeconds
+                          error:(NSError **)error;
+
+- (BOOL)commitPreRoll;
+
 - (BOOL)stopRecordingWithError:(NSError **)error;
 
 - (BOOL)isRecording;

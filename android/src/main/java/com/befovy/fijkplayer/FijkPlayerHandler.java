@@ -583,6 +583,53 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                 }
                 return true;
             }
+            case "startFFmpegPreRoll": {
+                String path = call.argument("path");
+                Integer preRollSeconds = call.argument("preRollSeconds");
+                if (path == null) {
+                    result.error("INVALID_ARGS", "Missing path", null);
+                    return true;
+                }
+                if (instance.dataSource == null || instance.dataSource.isEmpty()) {
+                    result.error("NO_DATA_SOURCE", "No data source set for recording", null);
+                    return true;
+                }
+                int seconds = preRollSeconds == null ? 5 : preRollSeconds;
+                try {
+                    if (instance.ffmpegRecorder == null) {
+                        instance.ffmpegRecorder = new FijkFFmpegRecorder();
+                    }
+                    boolean started = instance.ffmpegRecorder.startPreRoll(instance.dataSource, path, seconds);
+                    if (started) {
+                        result.success(null);
+                    } else {
+                        instance.methodChannel.invokeMethod("_onRecordingError", "Failed to start pre-roll");
+                        result.error("RECORDING_FAILED", "Failed to start FFmpeg pre-roll", null);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to start pre-roll", e);
+                    instance.methodChannel.invokeMethod("_onRecordingError", e.getMessage());
+                    result.error("RECORDING_FAILED", e.getMessage(), null);
+                }
+                return true;
+            }
+            case "commitFFmpegPreRoll": {
+                try {
+                    boolean committed = true;
+                    if (instance.ffmpegRecorder != null) {
+                        committed = instance.ffmpegRecorder.commitPreRoll();
+                    }
+                    if (committed) {
+                        result.success(null);
+                    } else {
+                        result.error("RECORDING_FAILED", "Failed to commit pre-roll", null);
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Failed to commit pre-roll", e);
+                    result.error("RECORDING_FAILED", e.getMessage(), null);
+                }
+                return true;
+            }
             case "stopFFmpegRecording":
             case "stopRecording": {
                 try {

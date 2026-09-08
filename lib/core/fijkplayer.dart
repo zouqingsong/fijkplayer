@@ -447,6 +447,57 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     return await _channel.invokeMethod("isFFmpegRecording");
   }
 
+  /// Start pre-roll buffering: silently buffer the last [preRollSeconds] of
+  /// the stream without writing to [path].
+  ///
+  /// Call [commitPreRoll] to begin writing the buffered history followed by
+  /// the live stream, then [stopFFmpegRecording] to finalize. Unlike
+  /// [startFFmpegRecording], this does not require a playable state and does
+  /// not signal a recording-started event.
+  Future<void> startPreRoll(String path, {int preRollSeconds = 5}) async {
+    await _nativeSetup.future;
+
+    bool isAlreadyRecording = await _channel.invokeMethod("isFFmpegRecording");
+    if (isAlreadyRecording) {
+      return Future.error(StateError("FFmpeg recording is already in progress"));
+    }
+
+    FijkLog.i("$this startPreRoll to $path (${preRollSeconds}s)");
+    await _channel.invokeMethod("startFFmpegPreRoll", <String, dynamic>{
+      'path': path,
+      'preRollSeconds': preRollSeconds,
+    });
+  }
+
+  /// Commit an armed pre-roll: begin writing the buffered history to the
+  /// output file, followed by the live stream.
+  Future<void> commitPreRoll() async {
+    await _nativeSetup.future;
+    FijkLog.i("$this commitPreRoll");
+    await _channel.invokeMethod("commitFFmpegPreRoll");
+  }
+
+  /// Cancel an armed pre-roll without producing a recording.
+  Future<void> discardPreRoll() async {
+    await _nativeSetup.future;
+
+    bool isCurrentlyRecording = await _channel.invokeMethod("isFFmpegRecording");
+    if (!isCurrentlyRecording) {
+      return;
+    }
+
+    FijkLog.i("$this discardPreRoll");
+    try {
+      await _channel.invokeMethod("stopFFmpegRecording");
+    } catch (e) {
+      // Discarding a never-committed pre-roll produces no video packets and
+      // therefore fails on stop; that is expected and safe to ignore.
+      FijkLog.i("$this discardPreRoll ignored stop error: $e");
+    }
+    _recording = null;
+    _isRecording = false;
+  }
+
   /// Set data source for this player
   ///
   /// [path] must be a valid uri, otherwise this method return ArgumentError

@@ -469,6 +469,38 @@ static const int end = 9;
             result([FlutterError errorWithCode:@"RECORDING_FAILED" message:msg details:nil]);
         }
         
+    } else if ([@"startFFmpegPreRoll" isEqualToString:call.method]) {
+        NSString *path = call.arguments[@"path"];
+        NSNumber *preRollSeconds = call.arguments[@"preRollSeconds"];
+        if (!_dataSource || _dataSource.length == 0) {
+            result([FlutterError errorWithCode:@"NO_DATA_SOURCE"
+                                       message:@"No data source set for recording"
+                                       details:nil]);
+            return;
+        }
+        NSError *error = nil;
+        BOOL started = [[FFmpegRecorder sharedInstance] startPreRollWithRtspUrl:_dataSource
+                                                                    outputPath:path
+                                                                preRollSeconds:preRollSeconds ? [preRollSeconds integerValue] : 5
+                                                                         error:&error];
+        if (started) {
+            result(@(0));
+        } else {
+            NSString *msg = error ? error.localizedDescription : @"Failed to start pre-roll";
+            [_methodChannel invokeMethod:@"_onRecordingError" arguments:msg];
+            result([FlutterError errorWithCode:@"RECORDING_FAILED" message:msg details:nil]);
+        }
+
+    } else if ([@"commitFFmpegPreRoll" isEqualToString:call.method]) {
+        BOOL committed = [[FFmpegRecorder sharedInstance] commitPreRoll];
+        if (committed) {
+            result(@(0));
+        } else {
+            result([FlutterError errorWithCode:@"RECORDING_FAILED"
+                                       message:@"Failed to commit pre-roll"
+                                       details:nil]);
+        }
+
     } else if ([@"stopFFmpegRecording" isEqualToString:call.method]) {
         NSError *error = nil;
         BOOL stopped = [[FFmpegRecorder sharedInstance] stopRecordingWithError:&error];
