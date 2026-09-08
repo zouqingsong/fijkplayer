@@ -26,8 +26,18 @@
 #import <libavutil/avutil.h>
 #import <libavutil/time.h>
 #import <libavutil/opt.h>
+#include <stdlib.h>
+#include <string.h>
 
-@interface FFmpegRecorder ()
+@interface FFmpegRecorder () {
+    // Pre-roll (ring buffer) storage of ref-counted AVPacket copies.
+    AVPacket *_preRollPackets;
+    int _preRollCount;
+    int _preRollCapacity;
+    // Synthesized timestamp counters for streams with missing PTS/DTS.
+    int64_t _runningInputPts;
+    int64_t _runningInputDts;
+}
 
 @property (nonatomic, strong) dispatch_queue_t recordingQueue;
 @property (atomic, assign) BOOL isRecording;
@@ -43,6 +53,28 @@
 @property (atomic, assign) int64_t writtenBytes;
 @property (atomic, strong) NSError *lastRecordingError;
 @property (nonatomic, strong) dispatch_semaphore_t stopWaitSemaphore;
+
+// Pre-roll state.
+@property (atomic, assign) BOOL preRollMode;
+@property (atomic, assign) NSInteger preRollSeconds;
+@property (atomic, assign) BOOL commitRequested;
+
+- (BOOL)writePacket:(AVPacket *)pkt
+            basePts:(int64_t)basePts
+            baseDts:(int64_t)baseDts
+           inStream:(AVStream *)inStr
+          outStream:(AVStream *)outStr;
+
+- (BOOL)flushPreRollBufferWithBasePts:(int64_t)basePts
+                              baseDts:(int64_t)baseDts
+                             inStream:(AVStream *)inStr
+                            outStream:(AVStream *)outStr;
+
+- (BOOL)preRollAppendPacket:(const AVPacket *)pkt;
+- (void)preRollClear;
+- (void)preRollFree;
+- (BOOL)preRollStaleForPacket:(const AVPacket *)pkt;
+- (void)preRollHardCap;
 
 @end
 
@@ -218,6 +250,9 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     return 0;
 }
 
+// Hard upper bound on buffered packets when PTS-based trimming cannot run.
+#define FFMPEG_PRE_ROLL_MAX_PACKETS 1200
+
 @implementation FFmpegRecorder
 
 + (instancetype)sharedInstance {
@@ -243,6 +278,14 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         _writtenBytes = 0;
         _lastRecordingError = nil;
         _stopWaitSemaphore = nil;
+        _preRollMode = NO;
+        _preRollSeconds = 0;
+        _commitRequested = NO;
+        _preRollPackets = NULL;
+        _preRollCount = 0;
+        _preRollCapacity = 0;
+        _runningInputPts = 0;
+        _runningInputDts = 0;
     }
     return self;
 }
@@ -268,6 +311,11 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         _writtenPackets = 0;
         _writtenBytes = 0;
         _lastRecordingError = nil;
+        _preRollMode = NO;
+        _preRollSeconds = 0;
+        _commitRequested = NO;
+        _runningInputPts = 0;
+        _runningInputDts = 0;
         _stopWaitSemaphore = dispatch_semaphore_create(0);
     }
     
@@ -278,17 +326,145 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     return YES;
 }
 
+- (BOOL)startPreRollWithRtspUrl:(NSString *)rtspUrl
+                     outputPath:(NSString *)outputPath
+                 preRollSeconds:(NSInteger)preRollSeconds
+                          error:(NSError **)error {
+    @synchronized (self) {
+        if (_isRecording) {
+            if (error) {
+                *error = [NSError errorWithDomain:@"FFmpegRecorder"
+                                             code:-1
+                                         userInfo:@{NSLocalizedDescriptionKey: @"Recording already in progress"}];
+            }
+            return NO;
+        }
+
+        _rtspUrl = rtspUrl;
+        _outputPath = outputPath;
+        _stopRequested = NO;
+        _isRecording = YES;
+        _writeHeaderDone = NO;
+        _writtenPackets = 0;
+        _writtenBytes = 0;
+        _lastRecordingError = nil;
+        _preRollMode = YES;
+        _preRollSeconds = preRollSeconds > 0 ? preRollSeconds : 5;
+        _commitRequested = NO;
+        _preRollPackets = NULL;
+        _preRollCount = 0;
+        _preRollCapacity = 0;
+        _runningInputPts = 0;
+        _runningInputDts = 0;
+        _stopWaitSemaphore = dispatch_semaphore_create(0);
+    }
+
+    dispatch_async(_recordingQueue, ^{
+        [self performRecording];
+    });
+
+    return YES;
+}
+
+- (BOOL)commitPreRoll {
+    @synchronized (self) {
+        if (!_isRecording) {
+            return NO;
+        }
+        if (!_preRollMode) {
+            return YES;
+        }
+        _commitRequested = YES;
+        return YES;
+    }
+}
+
+- (BOOL)preRollAppendPacket:(const AVPacket *)pkt {
+    if (_preRollCount == _preRollCapacity) {
+        int newCap = _preRollCapacity > 0 ? _preRollCapacity * 2 : 64;
+        AVPacket *nb = (AVPacket *)realloc(_preRollPackets, (size_t)newCap * sizeof(AVPacket));
+        if (!nb) {
+            NSLog(@"[FFmpegRecorder] Failed to grow pre-roll buffer");
+            return NO;
+        }
+        _preRollPackets = nb;
+        _preRollCapacity = newCap;
+    }
+    av_init_packet(&_preRollPackets[_preRollCount]);
+    int ret = av_packet_ref(&_preRollPackets[_preRollCount], pkt);
+    if (ret < 0) {
+        NSLog(@"[FFmpegRecorder] Failed to ref packet into pre-roll buffer: %s", av_err2str(ret));
+        return NO;
+    }
+    _preRollCount++;
+    return YES;
+}
+
+- (void)preRollClear {
+    for (int i = 0; i < _preRollCount; i++) {
+        av_packet_unref(&_preRollPackets[i]);
+    }
+    _preRollCount = 0;
+}
+
+- (void)preRollFree {
+    [self preRollClear];
+    if (_preRollPackets) {
+        free(_preRollPackets);
+        _preRollPackets = NULL;
+    }
+    _preRollCapacity = 0;
+}
+
+// True when the newest keyframe `pkt` is >= preRollSeconds ahead of the
+// current anchor (buffer[0]).
+- (BOOL)preRollStaleForPacket:(const AVPacket *)pkt {
+    if (_preRollCount == 0) return NO;
+    if (_videoStreamIndex < 0 || !_inputContext) return NO;
+    AVStream *in = _inputContext->streams[_videoStreamIndex];
+    if (in->time_base.num <= 0) return NO;
+    int64_t cur = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+    int64_t anchor = _preRollPackets[0].pts != AV_NOPTS_VALUE ? _preRollPackets[0].pts : _preRollPackets[0].dts;
+    if (cur == AV_NOPTS_VALUE || anchor == AV_NOPTS_VALUE) return NO;
+    int64_t span = cur - anchor;
+    if (span < 0) return NO;
+    int64_t window = ((int64_t)_preRollSeconds) * in->time_base.den / in->time_base.num;
+    return span >= window;
+}
+
+// Safety net for streams with missing timestamps.
+- (void)preRollHardCap {
+    if (_preRollCount <= FFMPEG_PRE_ROLL_MAX_PACKETS) return;
+    int lastKey = -1;
+    for (int i = _preRollCount - 1; i >= 0; i--) {
+        if (_preRollPackets[i].flags & AV_PKT_FLAG_KEY) {
+            lastKey = i;
+            break;
+        }
+    }
+    if (lastKey > 0) {
+        for (int i = 0; i < lastKey; i++) {
+            av_packet_unref(&_preRollPackets[i]);
+        }
+        memmove(_preRollPackets, _preRollPackets + lastKey,
+                (size_t)(_preRollCount - lastKey) * sizeof(AVPacket));
+        _preRollCount -= lastKey;
+    } else if (lastKey < 0) {
+        [self preRollClear];
+    }
+}
+
 - (void)performRecording {
     int ret;
     AVPacket pkt;
-    int64_t startPts = -1;
-    int64_t startDts = -1;
-    int64_t runningInputPts = 0;
-    int64_t runningInputDts = 0;
+    int64_t basePts = AV_NOPTS_VALUE;
+    int64_t baseDts = AV_NOPTS_VALUE;
     BOOL gotKeyframe = NO;
+    BOOL writing = !_preRollMode;
     BOOL isRtspSource = NO;
-    
-    NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@", _rtspUrl, _outputPath);
+
+    NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@ (preRoll=%d, seconds=%ld)",
+          _rtspUrl, _outputPath, _preRollMode, (long)_preRollSeconds);
 
     NSString *sourceLower = [_rtspUrl lowercaseString];
     isRtspSource = [sourceLower hasPrefix:@"rtsp://"] || [sourceLower hasPrefix:@"rtsps://"];
@@ -298,6 +474,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     if (isRtspSource) {
         av_dict_set(&options, "rtsp_transport", "tcp", 0);
         av_dict_set(&options, "max_delay", "500000", 0);
+        av_dict_set(&options, "probesize", "32", 0);
+        av_dict_set(&options, "analyzeduration", "1000000", 0);
     }
     
     ret = avformat_open_input(&_inputContext, [_rtspUrl UTF8String], NULL, &options);
@@ -391,9 +569,9 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         return;
     }
     _writeHeaderDone = YES;
-    
+
     NSLog(@"[FFmpegRecorder] Header written successfully, waiting for keyframe...");
-    
+
     // Recording loop
     while (!_stopRequested) {
         ret = av_read_frame(_inputContext, &pkt);
@@ -405,94 +583,90 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
             }
             break;
         }
-        
-        // Only process video packets
-        if (pkt.stream_index == _videoStreamIndex) {
-            AVStream *inStr = _inputContext->streams[_videoStreamIndex];
-            AVStream *outStr = _outputContext->streams[0];
-            enum AVCodecID codecId = inStr->codecpar->codec_id;
-            BOOL isVideoKeyPacket = ffmpegRecorderPacketIsKeyframeForCodec(codecId, &pkt);
 
-            // Keep packet payload untouched for MP4 muxing.
-            // Some camera streams advertise Annex-B-like prefixes inconsistently,
-            // and manual conversion here can corrupt slice payloads.
-
-            // Wait for first keyframe before writing any packets
-            if (!gotKeyframe) {
-                if (isVideoKeyPacket) {
-                    gotKeyframe = YES;
-                    int64_t keyPts = (pkt.pts != AV_NOPTS_VALUE) ? pkt.pts : pkt.dts;
-                    int64_t keyDts = (pkt.dts != AV_NOPTS_VALUE) ? pkt.dts : keyPts;
-                    if (keyPts == AV_NOPTS_VALUE) keyPts = 0;
-                    if (keyDts == AV_NOPTS_VALUE) keyDts = keyPts;
-
-                    startPts = keyPts;
-                    startDts = keyDts;
-                    runningInputPts = 0;
-                    runningInputDts = 0;
-                    NSLog(@"[FFmpegRecorder] Got first keyframe, starting recording");
-                } else {
-                    av_packet_unref(&pkt);
-                    continue;
-                }
-            }
-
-            // Normalize missing/invalid timestamps before muxing.
-            int64_t srcPts = pkt.pts;
-            int64_t srcDts = pkt.dts;
-            if (srcPts == AV_NOPTS_VALUE && srcDts != AV_NOPTS_VALUE) srcPts = srcDts;
-            if (srcDts == AV_NOPTS_VALUE && srcPts != AV_NOPTS_VALUE) srcDts = srcPts;
-            if (srcPts == AV_NOPTS_VALUE) srcPts = startPts + runningInputPts;
-            if (srcDts == AV_NOPTS_VALUE) srcDts = startDts + runningInputDts;
-
-            int64_t relPts = srcPts - startPts;
-            int64_t relDts = srcDts - startDts;
-            if (relPts < 0) relPts = 0;
-            if (relDts < 0) relDts = 0;
-
-            int64_t inputDur = pkt.duration;
-            if (inputDur <= 0 || inputDur == AV_NOPTS_VALUE) {
-                if (inStr->avg_frame_rate.num > 0 && inStr->avg_frame_rate.den > 0) {
-                    inputDur = av_rescale_q(1, av_inv_q(inStr->avg_frame_rate), inStr->time_base);
-                }
-                if (inputDur <= 0) inputDur = 1;
-            }
-
-            // Adjust timestamps relative to first keyframe
-            pkt.pts = av_rescale_q_rnd(relPts, inStr->time_base,
-                                       outStr->time_base,
-                                       AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            pkt.dts = av_rescale_q_rnd(relDts, inStr->time_base,
-                                       outStr->time_base,
-                                       AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
-            if (pkt.pts < pkt.dts) {
-                pkt.pts = pkt.dts;
-            }
-            pkt.duration = av_rescale_q(inputDur, inStr->time_base, outStr->time_base);
-            if (pkt.duration <= 0) pkt.duration = 1;
-            pkt.stream_index = 0;
-            pkt.pos = -1;
-            if (isVideoKeyPacket) {
-                pkt.flags |= AV_PKT_FLAG_KEY;
-            }
-
-            runningInputPts = relPts + inputDur;
-            runningInputDts = relDts + inputDur;
-            
-            // Write packet to output
-            ret = av_interleaved_write_frame(_outputContext, &pkt);
-            if (ret < 0) {
-                NSLog(@"[FFmpegRecorder] Error writing frame: %s", av_err2str(ret));
-                av_packet_unref(&pkt);
-                break;
-            }
-            _writtenPackets++;
-            _writtenBytes += pkt.size;
+        if (pkt.stream_index != _videoStreamIndex) {
+            av_packet_unref(&pkt);
+            continue;
         }
-        
+
+        AVStream *inStr = _inputContext->streams[_videoStreamIndex];
+        AVStream *outStr = _outputContext->streams[0];
+        enum AVCodecID codecId = inStr->codecpar->codec_id;
+        BOOL isVideoKeyPacket = ffmpegRecorderPacketIsKeyframeForCodec(codecId, &pkt);
+
+        if (!writing) {
+            // ---- pre-roll buffering phase ----
+            if (_commitRequested) {
+                if (_preRollCount > 0) {
+                    basePts = _preRollPackets[0].pts != AV_NOPTS_VALUE ? _preRollPackets[0].pts : _preRollPackets[0].dts;
+                    baseDts = _preRollPackets[0].dts != AV_NOPTS_VALUE ? _preRollPackets[0].dts : basePts;
+                    if (basePts == AV_NOPTS_VALUE) basePts = 0;
+                    if (baseDts == AV_NOPTS_VALUE) baseDts = basePts;
+                    _runningInputPts = 0;
+                    _runningInputDts = 0;
+                    int flushed = _preRollCount;
+                    if (![self flushPreRollBufferWithBasePts:basePts baseDts:baseDts inStream:inStr outStream:outStr]) {
+                        av_packet_unref(&pkt);
+                        break;
+                    }
+                    gotKeyframe = YES;
+                    NSLog(@"[FFmpegRecorder] Pre-roll committed; flushed %d buffered packets", flushed);
+                }
+                writing = YES;
+                // fall through to write the current packet
+            } else if (!gotKeyframe) {
+                if (isVideoKeyPacket) {
+                    pkt.flags |= AV_PKT_FLAG_KEY;
+                    if ([self preRollAppendPacket:&pkt]) {
+                        gotKeyframe = YES;
+                    }
+                }
+                av_packet_unref(&pkt);
+                continue;
+            } else {
+                if (isVideoKeyPacket) {
+                    pkt.flags |= AV_PKT_FLAG_KEY;
+                    if ([self preRollStaleForPacket:&pkt]) {
+                        [self preRollClear];
+                    }
+                }
+                if ([self preRollAppendPacket:&pkt]) {
+                    [self preRollHardCap];
+                }
+                av_packet_unref(&pkt);
+                continue;
+            }
+        }
+
+        // ---- writing phase ----
+        if (!gotKeyframe) {
+            if (isVideoKeyPacket) {
+                gotKeyframe = YES;
+                int64_t keyPts = (pkt.pts != AV_NOPTS_VALUE) ? pkt.pts : pkt.dts;
+                int64_t keyDts = (pkt.dts != AV_NOPTS_VALUE) ? pkt.dts : keyPts;
+                if (keyPts == AV_NOPTS_VALUE) keyPts = 0;
+                if (keyDts == AV_NOPTS_VALUE) keyDts = keyPts;
+                basePts = keyPts;
+                baseDts = keyDts;
+                _runningInputPts = 0;
+                _runningInputDts = 0;
+            } else {
+                av_packet_unref(&pkt);
+                continue;
+            }
+        }
+
+        if (isVideoKeyPacket) {
+            pkt.flags |= AV_PKT_FLAG_KEY;
+        }
+        if (![self writePacket:&pkt basePts:basePts baseDts:baseDts inStream:inStr outStream:outStr]) {
+            av_packet_unref(&pkt);
+            break;
+        }
+
         av_packet_unref(&pkt);
     }
-    
+
     NSLog(@"[FFmpegRecorder] Recording loop finished");
     if (_writtenPackets == 0) {
         _lastRecordingError = [NSError errorWithDomain:@"FFmpegRecorder"
@@ -504,6 +678,78 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
                                               userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Recording incomplete: only %d video packets were written", _writtenPackets]}];
     }
     [self cleanup];
+}
+
+- (BOOL)writePacket:(AVPacket *)pkt
+            basePts:(int64_t)basePts
+            baseDts:(int64_t)baseDts
+           inStream:(AVStream *)inStr
+          outStream:(AVStream *)outStr {
+    int64_t srcPts = pkt->pts;
+    int64_t srcDts = pkt->dts;
+    if (srcPts == AV_NOPTS_VALUE && srcDts != AV_NOPTS_VALUE) srcPts = srcDts;
+    if (srcDts == AV_NOPTS_VALUE && srcPts != AV_NOPTS_VALUE) srcDts = srcPts;
+    if (srcPts == AV_NOPTS_VALUE) srcPts = basePts + _runningInputPts;
+    if (srcDts == AV_NOPTS_VALUE) srcDts = baseDts + _runningInputDts;
+
+    int64_t relPts = srcPts - basePts;
+    int64_t relDts = srcDts - baseDts;
+    if (relPts < 0) relPts = 0;
+    if (relDts < 0) relDts = 0;
+
+    int64_t inputDur = pkt->duration;
+    if (inputDur <= 0 || inputDur == AV_NOPTS_VALUE) {
+        if (inStr->avg_frame_rate.num > 0 && inStr->avg_frame_rate.den > 0) {
+            inputDur = av_rescale_q(1, av_inv_q(inStr->avg_frame_rate), inStr->time_base);
+        }
+        if (inputDur <= 0) inputDur = 1;
+    }
+
+    pkt->pts = av_rescale_q_rnd(relPts, inStr->time_base, outStr->time_base,
+                                AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+    pkt->dts = av_rescale_q_rnd(relDts, inStr->time_base, outStr->time_base,
+                                AV_ROUND_NEAR_INF | AV_ROUND_PASS_MINMAX);
+    if (pkt->pts < pkt->dts) {
+        pkt->pts = pkt->dts;
+    }
+    pkt->duration = av_rescale_q(inputDur, inStr->time_base, outStr->time_base);
+    if (pkt->duration <= 0) pkt->duration = 1;
+    pkt->stream_index = 0;
+    pkt->pos = -1;
+
+    _runningInputPts = relPts + inputDur;
+    _runningInputDts = relDts + inputDur;
+
+    int wret = av_interleaved_write_frame(_outputContext, pkt);
+    if (wret < 0) {
+        NSLog(@"[FFmpegRecorder] Error writing frame: %s", av_err2str(wret));
+        return NO;
+    }
+    _writtenPackets++;
+    _writtenBytes += pkt->size;
+    return YES;
+}
+
+- (BOOL)flushPreRollBufferWithBasePts:(int64_t)basePts
+                              baseDts:(int64_t)baseDts
+                             inStream:(AVStream *)inStr
+                            outStream:(AVStream *)outStr {
+    for (int i = 0; i < _preRollCount; i++) {
+        AVPacket tmp;
+        av_init_packet(&tmp);
+        if (av_packet_ref(&tmp, &_preRollPackets[i]) < 0) {
+            NSLog(@"[FFmpegRecorder] Failed to ref buffered packet %d", i);
+            return NO;
+        }
+        BOOL ok = [self writePacket:&tmp basePts:basePts baseDts:baseDts inStream:inStr outStream:outStr];
+        av_packet_unref(&tmp);
+        if (!ok) {
+            NSLog(@"[FFmpegRecorder] Failed to flush buffered packet %d", i);
+            return NO;
+        }
+    }
+    [self preRollClear];
+    return YES;
 }
 
 - (void)cleanup {
@@ -554,12 +800,17 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         avformat_close_input(&_inputContext);
         _inputContext = NULL;
     }
-    
+
+    [self preRollFree];
+
     @synchronized (self) {
         _isRecording = NO;
         _videoStreamIndex = -1;
         _stopRequested = NO;
         _writeHeaderDone = NO;
+        _preRollMode = NO;
+        _preRollSeconds = 0;
+        _commitRequested = NO;
     }
     dispatch_semaphore_t waitSem = _stopWaitSemaphore;
     if (waitSem) {
