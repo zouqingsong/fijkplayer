@@ -24,7 +24,7 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   # Legacy ijkplayer support removed - now using native FFmpeg-based player
   # See NativePlayer/ directory for implementation
   
-  s.libraries = "bz2", "z", "stdc++", "c++"
+  s.libraries = "bz2", "z", "iconv", "stdc++", "c++"
   s.dependency 'Flutter'
 
   # BIJKPlayer dependency REMOVED
@@ -37,19 +37,23 @@ Supports RTSP, HTTP, HLS streaming with hardware-accelerated video decoding.
   s.preserve_paths = 'FFmpeg/lib/**/*', 'FFmpeg/include/**/*'
   
   # Configure for both device and simulator
+  # NOTE: avcodec/avformat/avutil have static (.a) builds under arm64-static /
+  # simulator-static. swscale/swresample/avfilter (and their transitive iconv
+  # dependency) only exist as .dylib under arm64 / arm64-simulator, so both
+  # search paths are needed together.
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386 x86_64',
-    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64"',
-    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64-simulator"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64-static" "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/simulator-static" "$(PODS_TARGET_SRCROOT)/FFmpeg/lib/arm64-simulator"',
     'OTHER_LDFLAGS' => '$(inherited) -lavcodec -lavformat -lavutil -lswscale -lswresample -lavfilter'
   }
   
   # User target xcconfig - propagates to the main app
   s.user_target_xcconfig = {
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386 x86_64',
-    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64"',
-    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64-simulator"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphoneos*]' => '$(inherited) "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64-static" "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64"',
+    'LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]' => '$(inherited) "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/simulator-static" "$(PODS_ROOT)/../.symlinks/plugins/fijkplayer/ios/FFmpeg/lib/arm64-simulator"',
     'OTHER_LDFLAGS' => '$(inherited) -lavcodec -lavformat -lavutil -lswscale -lswresample -lavfilter'
   }
   
