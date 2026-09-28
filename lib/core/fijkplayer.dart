@@ -670,6 +670,12 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
           value.state == FijkState.completed) {
         FijkLog.i("$this invoke start");
         await _channel.invokeMethod("start");
+      } else if (state == FijkState.end) {
+        // The player was released while an async open/prepare was still in
+        // flight (a stalled RTSP open can take ~30 s). The late continuation
+        // must not surface as an unhandled error.
+        FijkLog.w("$this start ignored on released player");
+        return;
       } else {
         FijkLog.e("$this invoke start invalid state:$state");
         return Future.error(StateError("call start on invalid state $state"));
