@@ -27,7 +27,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * Render a decoded frame
- * Copies from VideoToolbox output to Flutter texture buffer
+ * Copies from VideoToolbox output into a fresh pooled buffer, publishes it as
+ * the current frame and leaves every previously published frame untouched
  * @param sourceBuffer CVPixelBuffer from VideoToolbox
  * @return YES on success
  */
@@ -35,7 +36,8 @@ NS_ASSUME_NONNULL_BEGIN
 
 /**
  * Get the current output buffer for Flutter
- * Caller should NOT release this - it's managed internally
+ * @return the latest finished frame, which the caller owns and must release
+ *         after Flutter is done with it, or NULL before the first frame
  */
 - (CVPixelBufferRef _Nullable)getOutputBuffer;
 

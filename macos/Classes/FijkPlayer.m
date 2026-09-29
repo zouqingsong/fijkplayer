@@ -403,8 +403,10 @@ static const int end = 9;
             return;
         }
         NSError *err = nil;
-        BOOL ok = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+        // Recording follows the preview, so it starts where the viewer is.
+        BOOL ok = [[FFmpegRecorder sharedInstance] startRecordingWithSource:_dataSource
                                                                  outputPath:path
+                                                            startPositionMs:_nativePlayer.currentPosition
                                                                       error:&err];
         if (ok) {
             [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];
@@ -439,8 +441,10 @@ static const int end = 9;
             return;
         }
         NSError *err = nil;
-        BOOL ok = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+        // Recording follows the preview, so it starts where the viewer is.
+        BOOL ok = [[FFmpegRecorder sharedInstance] startRecordingWithSource:_dataSource
                                                                  outputPath:path
+                                                            startPositionMs:_nativePlayer.currentPosition
                                                                       error:&err];
         if (ok) {
             [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];

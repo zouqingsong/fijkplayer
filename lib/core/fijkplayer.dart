@@ -430,7 +430,13 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     // Check if there's an active FFmpeg recording
     bool isCurrentlyRecording = await _channel.invokeMethod("isFFmpegRecording");
     if (!isCurrentlyRecording) {
-      return Future.error(StateError("No FFmpeg recording in progress"));
+      // The native recorder finalises on its own when the source ends, so a
+      // stop that arrives afterwards is a no-op rather than an error: the file
+      // on disk still holds everything that was recorded.
+      FijkLog.i("$this stopFFmpegRecording: nothing to stop");
+      _recording = null;
+      _isRecording = false;
+      return;
     }
     
     FijkLog.i("$this stopFFmpegRecording");

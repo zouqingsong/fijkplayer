@@ -145,9 +145,14 @@ class _DefaultFijkPanelState extends State<_DefaultFijkPanel> {
   void _playOrPause() {
     if (_playing == true) {
       player.pause();
-    } else {
-      player.start();
+      return;
     }
+    // A finished clip sits at its last frame: starting it again does nothing
+    // visible, so rewind first — that is what "play" means once it has ended.
+    if (player.value.state == FijkState.completed) {
+      player.seekTo(0);
+    }
+    player.start();
   }
 
   @override
@@ -238,9 +243,16 @@ class _DefaultFijkPanelState extends State<_DefaultFijkPanel> {
                           });
                         },
                         onChangeEnd: (v) {
+                          _startHideTimer();
                           setState(() {
                             player.seekTo(v.toInt());
-                            print("seek to $v");
+                            // Dragging the bar of a finished clip has to resume
+                            // playback, otherwise the picture stays frozen on
+                            // the last frame wherever it is dropped. A clip the
+                            // user paused stays paused, as in any other player.
+                            if (player.value.state == FijkState.completed) {
+                              player.start();
+                            }
                             _currentPos =
                                 Duration(milliseconds: _seekPos.toInt());
                             _seekPos = -1;

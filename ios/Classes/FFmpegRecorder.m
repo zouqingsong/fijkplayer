@@ -43,7 +43,20 @@
 @property (atomic, assign) BOOL isRecording;
 @property (nonatomic, strong) NSString *rtspUrl;
 @property (nonatomic, strong) NSString *outputPath;
+/// Position in the source the recording starts from, in milliseconds.
+@property (atomic, assign) int64_t startPositionMs;
 
+/// Presentation time (microseconds, output time base) of the packet written
+/// last, used to pace a local file recording to playback speed.
+@property (atomic, assign) int64_t lastWrittenPtsUs;
+
+/// End of the packet written last, in the input stream's time base. Keeps the
+/// output timeline monotonic when a local file is rewound mid-recording.
+@property (atomic, assign) int64_t lastWrittenEndPtsIn;
+
+/// End of the packet written last along the decode timeline. A rewind has to
+/// continue from these, because the mp4 muxer checks dts, not pts.
+@property (atomic, assign) int64_t lastWrittenEndDtsIn;
 @property (atomic, assign) AVFormatContext *inputContext;
 @property (atomic, assign) AVFormatContext *outputContext;
 @property (atomic, assign) int videoStreamIndex;
@@ -293,6 +306,16 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
 - (BOOL)startRecordingWithRtspUrl:(NSString *)rtspUrl 
                        outputPath:(NSString *)outputPath 
                             error:(NSError **)error {
+    return [self startRecordingWithSource:rtspUrl
+                               outputPath:outputPath
+                          startPositionMs:0
+                                    error:error];
+}
+
+- (BOOL)startRecordingWithSource:(NSString *)source
+                      outputPath:(NSString *)outputPath
+                 startPositionMs:(int64_t)startPositionMs
+                           error:(NSError **)error {
     @synchronized (self) {
         if (_isRecording) {
             if (error) {
@@ -303,8 +326,12 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
             return NO;
         }
         
-        _rtspUrl = rtspUrl;
+        _rtspUrl = source;
         _outputPath = outputPath;
+        _startPositionMs = startPositionMs;
+        _lastWrittenPtsUs = 0;
+        _lastWrittenEndPtsIn = 0;
+        _lastWrittenEndDtsIn = 0;
         _stopRequested = NO;
         _isRecording = YES;
         _writeHeaderDone = NO;
@@ -463,11 +490,22 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     BOOL writing = !_preRollMode;
     BOOL isRtspSource = NO;
 
-    NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@ (preRoll=%d, seconds=%ld)",
-          _rtspUrl, _outputPath, _preRollMode, (long)_preRollSeconds);
+    // A local file decodes as fast as the disk allows, so writing it straight
+    // out would finish a ten second clip in thirty milliseconds. It is paced to
+    // playback speed and rewound at its end instead, which is also what the
+    // preview does with the same file.
+    BOOL paceToSource = NO;
+    BOOL loopLocalFile = NO;
+    int64_t paceStartWallUs = -1;
+    int64_t paceStartPtsUs = 0;
+
+    NSLog(@"[FFmpegRecorder] Starting recording from %@ to %@ at %lld ms (preRoll=%d, seconds=%ld)",
+          _rtspUrl, _outputPath, (long long)_startPositionMs, _preRollMode, (long)_preRollSeconds);
 
     NSString *sourceLower = [_rtspUrl lowercaseString];
     isRtspSource = [sourceLower hasPrefix:@"rtsp://"] || [sourceLower hasPrefix:@"rtsps://"];
+    paceToSource = !isRtspSource;
+    loopLocalFile = !isRtspSource;
     
     // Open input (RTSP stream)
     AVDictionary *options = NULL;
@@ -516,6 +554,18 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     
     NSLog(@"[FFmpegRecorder] Found video stream at index %d, codec_id=%d", 
           _videoStreamIndex, _inputContext->streams[_videoStreamIndex]->codecpar->codec_id);
+
+    // Start where the user is watching, so a recording made halfway through a
+    // clip does not begin at the clip's own beginning.
+    if (!isRtspSource && _startPositionMs > 0) {
+        AVStream *startStream = _inputContext->streams[_videoStreamIndex];
+        int64_t startTs = av_rescale_q(_startPositionMs, (AVRational){1, 1000}, startStream->time_base);
+        int seekRet = av_seek_frame(_inputContext, _videoStreamIndex, startTs, AVSEEK_FLAG_BACKWARD);
+        if (seekRet < 0) {
+            NSLog(@"[FFmpegRecorder] Seek to %lld ms failed: %s",
+                  (long long)_startPositionMs, av_err2str(seekRet));
+        }
+    }
 
     // Create output context. Recording is standardized to MP4 on mobile.
     const char *formatName = "mp4";
@@ -578,6 +628,21 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         if (ret < 0) {
             if (ret == AVERROR_EOF) {
                 NSLog(@"[FFmpegRecorder] End of stream reached");
+                // The preview rewinds and keeps playing, so the recording must
+                // not stop at the first end of the file. Rewind and continue;
+                // the timestamp base is shifted below so the output stays
+                // monotonic.
+                if (loopLocalFile && !_stopRequested) {
+                    AVStream *loopStream = _inputContext->streams[_videoStreamIndex];
+                    int64_t loopTs = av_rescale_q(_startPositionMs, (AVRational){1, 1000}, loopStream->time_base);
+                    if (av_seek_frame(_inputContext, _videoStreamIndex, loopTs, AVSEEK_FLAG_BACKWARD) >= 0) {
+                        NSLog(@"[FFmpegRecorder] Rewound local source to %lld ms at %d packets",
+                              (long long)_startPositionMs, _writtenPackets);
+                        gotKeyframe = NO;
+                        continue;
+                    }
+                    NSLog(@"[FFmpegRecorder] Rewind failed, ending recording");
+                }
             } else {
                 NSLog(@"[FFmpegRecorder] Error reading frame: %s", av_err2str(ret));
             }
@@ -640,19 +705,33 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
 
         // ---- writing phase ----
         if (!gotKeyframe) {
-            if (isVideoKeyPacket) {
-                gotKeyframe = YES;
-                int64_t keyPts = (pkt.pts != AV_NOPTS_VALUE) ? pkt.pts : pkt.dts;
-                int64_t keyDts = (pkt.dts != AV_NOPTS_VALUE) ? pkt.dts : keyPts;
-                if (keyPts == AV_NOPTS_VALUE) keyPts = 0;
-                if (keyDts == AV_NOPTS_VALUE) keyDts = keyPts;
+            if (!isVideoKeyPacket) {
+                av_packet_unref(&pkt);
+                continue;
+            }
+            gotKeyframe = YES;
+            int64_t keyPts = (pkt.pts != AV_NOPTS_VALUE) ? pkt.pts : pkt.dts;
+            int64_t keyDts = (pkt.dts != AV_NOPTS_VALUE) ? pkt.dts : keyPts;
+            if (keyPts == AV_NOPTS_VALUE) keyPts = 0;
+            if (keyDts == AV_NOPTS_VALUE) keyDts = keyPts;
+            if (basePts == AV_NOPTS_VALUE) {
                 basePts = keyPts;
                 baseDts = keyDts;
                 _runningInputPts = 0;
                 _runningInputDts = 0;
             } else {
-                av_packet_unref(&pkt);
-                continue;
+                // The file was rewound mid-recording: continue the output
+                // timeline where the previous pass stopped instead of starting
+                // over at zero. The shift is anchored on the decode timeline:
+                // an mp4 refuses a dts that does not increase, and the pts one
+                // runs a frame or two ahead of it whenever the source has
+                // B-frames (a rewind lands on a key frame whose pts is already
+                // past the last written dts).
+                int64_t previousEnd = _lastWrittenEndDtsIn;
+                baseDts = keyDts - previousEnd;
+                basePts = baseDts;
+                _runningInputPts = keyPts - basePts;
+                _runningInputDts = previousEnd;
             }
         }
 
@@ -665,6 +744,23 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
         }
 
         av_packet_unref(&pkt);
+
+        // Hold the recording at the speed the clip is playing, otherwise the
+        // whole file lands on disk before the user can press stop.
+        if (writing && paceToSource) {
+            if (paceStartWallUs < 0) {
+                paceStartWallUs = av_gettime_relative();
+                paceStartPtsUs = _lastWrittenPtsUs;
+            } else {
+                int64_t dueUs = paceStartWallUs + (_lastWrittenPtsUs - paceStartPtsUs);
+                int64_t waitUs = dueUs - av_gettime_relative();
+                if (waitUs > 0) {
+                    // Never block a stop request for more than a frame or two.
+                    if (waitUs > 100000) waitUs = 100000;
+                    av_usleep((unsigned int)waitUs);
+                }
+            }
+        }
     }
 
     NSLog(@"[FFmpegRecorder] Recording loop finished");
@@ -719,10 +815,13 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
 
     _runningInputPts = relPts + inputDur;
     _runningInputDts = relDts + inputDur;
+    _lastWrittenEndPtsIn = relPts + inputDur;
+    _lastWrittenEndDtsIn = relDts + inputDur;
+    _lastWrittenPtsUs = av_rescale_q(pkt->pts, outStr->time_base, (AVRational){1, 1000000});
 
     int wret = av_interleaved_write_frame(_outputContext, pkt);
     if (wret < 0) {
-        NSLog(@"[FFmpegRecorder] Error writing frame: %s", av_err2str(wret));
+        NSLog(@"[FFmpegRecorder] Error writing frame: %d", wret);
         return NO;
     }
     _writtenPackets++;

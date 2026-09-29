@@ -728,17 +728,22 @@ int ff_demuxer_seek(FFDemuxer* demuxer, int stream_index, int64_t timestamp_us, 
     
     // For seeking to start, use byte-level seek + avformat_seek_file (ijkplayer approach)
     if (timestamp_us == 0) {
-        LOGI("Using byte-level seek to beginning (ijkplayer approach)");
-        // First, do a byte-level seek to position 0 in the file
-        // This bypasses the format layer and goes directly to file I/O
-        if (demuxer->format_ctx->pb) {
-            int64_t pos = avio_seek(demuxer->format_ctx->pb, 0, SEEK_SET);
-            LOGI("avio_seek to 0 returned: %lld", (long long)pos);
+        // A rewind is the one seek every demuxer understands, but the byte-level
+        // trick below is rejected by some of them (mov/mp4 answers -1 to
+        // AVSEEK_FLAG_BYTE), so try the ordinary backward seek first and keep the
+        // byte-level attempt as the fallback it was meant to be.
+        ret = av_seek_frame(demuxer->format_ctx, stream_index, 0, AVSEEK_FLAG_BACKWARD);
+        if (ret < 0) {
+            LOGW("Backward seek to start failed (%d), retrying at byte level", ret);
+            avformat_flush(demuxer->format_ctx);
+            if (demuxer->format_ctx->pb) {
+                int64_t pos = avio_seek(demuxer->format_ctx->pb, 0, SEEK_SET);
+                LOGI("avio_seek to 0 returned: %lld", (long long)pos);
+            }
+            // Use AVSEEK_FLAG_BYTE (1) to force byte-based seeking
+            ret = avformat_seek_file(demuxer->format_ctx, stream_index,
+                                     0, 0, 0, AVSEEK_FLAG_BYTE);
         }
-        // Then use avformat_seek_file to reset the format context state
-        // Use AVSEEK_FLAG_BYTE (1) to force byte-based seeking
-        ret = avformat_seek_file(demuxer->format_ctx, stream_index, 
-                                 0, 0, 0, AVSEEK_FLAG_BYTE);
     } else {
         // For non-zero seeks, use av_seek_frame with provided flags
         ret = av_seek_frame(demuxer->format_ctx, stream_index, seek_target, flags);

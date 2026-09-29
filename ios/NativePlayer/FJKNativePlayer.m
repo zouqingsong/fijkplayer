@@ -60,6 +60,38 @@
     double _videoFrameRate; // Actual frame rate from stream
     int64_t _lastVideoPts;
     
+    // Seek requests are handed to the decoder loop, which is the only thread
+    // allowed to touch the demuxer.
+    BOOL _seekPending;
+    int64_t _pendingSeekMs;
+    /// Frames decoded before the seek took effect still carry the old position;
+    /// they are dropped until the decoder catches up with the target.
+    BOOL _seekFilterActive;
+    int64_t _seekFilterTargetMs;
+    int _seekFilterDropped;
+    /// Presentation clock: a frame is held until its timestamp is due, so the
+    /// bursty arrival of network packets does not turn into bursty motion.
+    BOOL _presentationClockAnchored;
+    CFTimeInterval _presentationAnchorWall;
+    int64_t _presentationAnchorPts;
+    /// Longest a frame is ever held back while waiting for its turn; a bigger gap
+    /// means a burst larger than the buffer, which is better jumped than slept.
+    CFTimeInterval _maxPresentationWait;
+    /// Temporary: interval statistics used while tuning the presentation clock.
+    CFTimeInterval _paceLogWindowStart;
+    int _paceLogFrames;
+    double _paceLogSleepMs;
+    /// VideoToolbox returns frames in decode order, so streams with B-frames
+    /// arrive slightly out of order. This small window is kept sorted by
+    /// timestamp and released in order.
+    CVPixelBufferRef _reorderBuffers[4];
+    int64_t _reorderPts[4];
+    int _reorderCount;
+    /// Temporary throughput counters for the judder investigation.
+    int _statsPackets;
+    int _statsFrames;
+    CFTimeInterval _statsWindowStart;
+    
     // Synchronization
     NSLock *_stateLock;
     
@@ -188,6 +220,11 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
         _isLiveStream = NO;
         _videoFrameRate = 24.0; // Default fallback
         _targetFrameInterval = 1.0/24.0;
+        // Deliberately small: the pacing wait runs on the thread that reads the
+        // stream, so anything longer throttles the demuxer, the player falls
+        // behind and the server starts skipping frames for it. A few tens of
+        // milliseconds absorbs bursty delivery without costing throughput.
+        _maxPresentationWait = 0.03;
         _audioStreamIndex = -1;
         _videoStreamIndex = -1;
         _audioClock = 0.0;
@@ -329,18 +366,31 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
 
 - (int)start {
     [_stateLock lock];
-    if (_state != FJKPlayerStatePrepared && _state != FJKPlayerStatePaused) {
+    if (_state != FJKPlayerStatePrepared && _state != FJKPlayerStatePaused &&
+        _state != FJKPlayerStateCompleted) {
         NSLog(@"[FJKNativePlayer] Cannot start in state %ld", (long)_state);
         [_stateLock unlock];
         return -1;
     }
     
+    if (_state == FJKPlayerStateCompleted) {
+        // A finished clip sits on its last frame: rewind first, otherwise the
+        // loop would read nothing but end-of-stream and complete again.
+        _pendingSeekMs = 0;
+        _seekPending = YES;
+    }
+    
     _state = FJKPlayerStatePlaying;
     _isPlaying = YES;
     
-    // Reset frame timing
+    // Reset frame timing and the presentation clock, so the first frame of this
+    // play session anchors a fresh timeline instead of inheriting the old one.
     _lastFrameTime = 0;
     _targetFrameInterval = 1.0 / 24.0; // Assume 24fps for now
+    [self resetPresentationClock];
+    _paceLogWindowStart = 0;
+    _paceLogFrames = 0;
+    _paceLogSleepMs = 0.0;
     
     [_stateLock unlock];
     
@@ -407,8 +457,70 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
 }
 
 - (void)seekTo:(int64_t)positionMs {
-    // TODO: Implement seeking
-    NSLog(@"[FJKNativePlayer] Seek to %lld ms (not implemented)", positionMs);
+    if (positionMs < 0) {
+        positionMs = 0;
+    }
+    if (!_demuxer) {
+        return;
+    }
+    
+    // The decoder loop owns the demuxer, so the request is queued and applied
+    // between two reads of the loop. Seeking from the caller's thread would race
+    // with av_read_frame, and a paused or finished player has no loop running —
+    // in that case the next -start applies the queued seek.
+    [_stateLock lock];
+    _pendingSeekMs = positionMs;
+    _seekPending = YES;
+    [_stateLock unlock];
+    
+    NSLog(@"[FJKNativePlayer] Seek queued to %lld ms", positionMs);
+}
+
+/// Applies the queued seek. Runs on the decoder queue.
+- (void)performPendingSeek {
+    int64_t positionMs = _pendingSeekMs;
+    _seekPending = NO;
+    
+    if (!_demuxer || _videoStreamIndex < 0) {
+        return;
+    }
+    
+    // The demuxer latched EOF when playback ran to the end; without clearing it
+    // every read after the seek would keep reporting the end of the stream.
+    ff_demuxer_clear_eof(_demuxer);
+    
+    int ret = ff_demuxer_seek(_demuxer, _videoStreamIndex, positionMs * 1000, 0);
+    if (ret < 0) {
+        NSLog(@"[FJKNativePlayer] Seek to %lld ms failed: %d", positionMs, ret);
+        return;
+    }
+    
+    // Drop everything the decoders buffered from the old position.
+    if (_useSoftwareDecoder) {
+        if (_bsfCtx) {
+            av_bsf_flush(_bsfCtx);
+        }
+        if (_swDecoderCtx) {
+            avcodec_flush_buffers(_swDecoderCtx);
+        }
+    } else {
+        // VideoToolbox has no flush API; its reordered frames are filtered out by
+        // PTS in -handleDecodedFrame: instead.
+        _seekFilterActive = YES;
+        _seekFilterTargetMs = positionMs;
+        _seekFilterDropped = 0;
+    }
+    
+    // Frames buffered for the old position must not be shown after the jump:
+    // they would be released after the seek and drag the picture back, which is
+    // exactly the backwards jump a replay used to show.
+    [self flushReorderQueue];
+    
+    _lastFrameTime = 0;
+    _currentPosition = positionMs;
+    [self resetPresentationClock];
+    NSLog(@"[FJKNativePlayer] Seeked to %lld ms", positionMs);
+    [self notifyEvent:FJKPlayerEventSeekComplete arg1:0 arg2:0];
 }
 
 - (void)setVolume:(float)volume {
@@ -485,6 +597,7 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
         CFRelease(_decompressionSession);
         _decompressionSession = NULL;
     }
+    [self flushReorderQueue];
     
     if (_formatDescription) {
         CFRelease(_formatDescription);
@@ -951,8 +1064,14 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
 
     enum AVCodecID codecId = _swDecoderCtx ? _swDecoderCtx->codec_id : AV_CODEC_ID_NONE;
 
+    // A live source (RTSP/RTMP) already delivers Annex-B, start-code prefixed NAL
+    // units. Running those through the AVCC->AnnexB filter mangles them and the
+    // decoder silently throws away most of the frames, which is what reduces a
+    // 30 fps stream to a handful of frames per second.
+    BOOL alreadyAnnexB = fjkPacketHasAnnexBStartCode(avpkt->data, avpkt->size);
+
     // Apply BSF filter if available (AVCC -> Annex B)
-    if (_bsfCtx) {
+    if (_bsfCtx && !alreadyAnnexB) {
         int bsfRet = av_bsf_send_packet(_bsfCtx, avpkt);
         if (bsfRet < 0) {
             static int bsfSendErrCount = 0;
@@ -986,7 +1105,8 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
                 }
             }
         }
-    } else if (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264) {
+    } else if (!alreadyAnnexB &&
+               (codecId == AV_CODEC_ID_HEVC || codecId == AV_CODEC_ID_H264)) {
         // Fallback for local MP4/MOV camera recordings when BSF is unavailable.
         int convertRet = fjkConvertLengthPrefixedToAnnexB(avpkt);
         if (convertRet < 0) {
@@ -1010,13 +1130,27 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
     if (!frame) return;
     
     while (avcodec_receive_frame(_swDecoderCtx, frame) == 0) {
+        _statsFrames++;
         // Convert AVFrame to CVPixelBuffer
         CVPixelBufferRef pixelBuffer = [self pixelBufferFromAVFrame:frame];
         if (pixelBuffer) {
-            // Track decoded frame position (for stall detection)
-            _currentPosition++;
+            // Report media time rather than a frame count: the caller uses this
+            // value for stall detection and for the elapsed-time readout.
+            AVFormatContext *formatCtx = ff_demuxer_get_format_context(_demuxer);
+            BOOL hasPts = formatCtx && _videoStreamIndex >= 0 &&
+                          frame->best_effort_timestamp != AV_NOPTS_VALUE;
+            if (hasPts) {
+                _currentPosition = av_rescale_q(frame->best_effort_timestamp,
+                                                formatCtx->streams[_videoStreamIndex]->time_base,
+                                                (AVRational){1, 1000});
+            } else {
+                _currentPosition++;
+            }
             
-            // Deliver frame to renderer
+            // Deliver frame to renderer, held back until its time is due
+            if (hasPts) {
+                [self waitForPresentationTimeMs:_currentPosition];
+            }
             [_renderer renderFrame:pixelBuffer];
             
             // Notify texture update
@@ -1119,29 +1253,196 @@ static void decompressionOutputCallback(
         return;
     }
     
-    // Simple frame rate limiting
-    CFTimeInterval currentTime = CACurrentMediaTime();
-    if (_lastFrameTime > 0) {
-        CFTimeInterval elapsed = currentTime - _lastFrameTime;
-        if (elapsed < _targetFrameInterval) {
-            // Skip this frame - we're going too fast
+    // After a seek, VideoToolbox keeps emitting frames it had already decoded at
+    // the old position; there is no flush API for it. Drop those until one lands
+    // near the target, with a cap so a stream whose timestamps do not line up
+    // with the seek target can never end up showing nothing at all.
+    if (_seekFilterActive) {
+        const double ptsMs = CMTimeGetSeconds(pts) * 1000.0;
+        const double distanceMs = fabs(ptsMs - (double)_seekFilterTargetMs);
+        if (distanceMs > 500.0 && _seekFilterDropped < 90) {
+            _seekFilterDropped++;
             return;
         }
+        _seekFilterActive = NO;
+        _seekFilterDropped = 0;
     }
     
-    _lastFrameTime = currentTime;
-    [self displayFrame:imageBuffer pts:pts];
+    // Presentation is paced by -waitForPresentationTimeMs:, which is called by
+    // both decode paths before a frame reaches the renderer. Dropping frames
+    // here instead would throw away content the stream actually delivered.
+    
+    [self enqueueDecodedFrame:imageBuffer pts:pts];
+}
+
+/// Buffers one decoded frame and releases the oldest one that is now known to be
+/// in order.
+///
+/// VideoToolbox answers in decode order, so on a stream with B-frames a frame
+/// for an earlier instant can arrive after a later one. Showing them in arrival
+/// order makes the picture — and the reported position — jump backwards, which
+/// is what a progress bar sliding back and forth means. Sorting a window of four
+/// frames fixes the order; streams without B-frames already arrive sorted, so
+/// the very first comparison releases each frame immediately.
+- (void)enqueueDecodedFrame:(CVImageBufferRef)imageBuffer pts:(CMTime)pts {
+    if (!imageBuffer) {
+        return;
+    }
+    int64_t ptsMs = CMTIME_IS_VALID(pts)
+        ? (int64_t)llround(CMTimeGetSeconds(pts) * 1000.0)
+        : INT64_MAX;
+    
+    int slot = _reorderCount;
+    while (slot > 0 && _reorderPts[slot - 1] > ptsMs) {
+        _reorderBuffers[slot] = _reorderBuffers[slot - 1];
+        _reorderPts[slot] = _reorderPts[slot - 1];
+        slot--;
+    }
+    _reorderBuffers[slot] = CVPixelBufferRetain(imageBuffer);
+    _reorderPts[slot] = ptsMs;
+    _reorderCount++;
+    
+    if (_reorderCount < (int)(sizeof(_reorderBuffers) / sizeof(_reorderBuffers[0]))) {
+        return;
+    }
+    
+    CVPixelBufferRef due = _reorderBuffers[0];
+    int64_t duePts = _reorderPts[0];
+    for (int index = 1; index < _reorderCount; index++) {
+        _reorderBuffers[index - 1] = _reorderBuffers[index];
+        _reorderPts[index - 1] = _reorderPts[index];
+    }
+    _reorderCount--;
+    
+    [self displayFrame:due pts:CMTimeMake(duePts, 1000)];
+    CVPixelBufferRelease(due);
+}
+
+/// Drops the frames still waiting for their neighbours.
+- (void)flushReorderQueue {
+    for (int index = 0; index < _reorderCount; index++) {
+        CVPixelBufferRelease(_reorderBuffers[index]);
+        _reorderBuffers[index] = NULL;
+    }
+    _reorderCount = 0;
+}
+
+/// Starts a new presentation clock at [ptsMs], so the frames that follow are
+/// spaced by their own timestamps rather than by when they happened to decode.
+- (void)anchorPresentationClockTo:(int64_t)ptsMs at:(CFTimeInterval)wall {
+    _presentationClockAnchored = YES;
+    _presentationAnchorPts = ptsMs;
+    _presentationAnchorWall = wall;
+}
+
+- (void)resetPresentationClock {
+    _presentationClockAnchored = NO;
+}
+
+/// Holds the calling decoder thread until [ptsMs] is due on the presentation
+/// clock.
+///
+/// Over TCP a burst of packets can arrive at once, and rendering every decoded
+/// frame immediately would push a whole burst of motion into one display
+/// refresh — the picture then jumps ahead and freezes, which reads as shaking
+/// on any smooth motion. Waiting for the timestamp spreads those frames out.
+- (void)waitForPresentationTimeMs:(int64_t)ptsMs {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (!_presentationClockAnchored) {
+        [self anchorPresentationClockTo:ptsMs at:now];
+        return;
+    }
+    
+    CFTimeInterval target = _presentationAnchorWall +
+                            (ptsMs - _presentationAnchorPts) / 1000.0;
+    CFTimeInterval delay = target - now;
+    
+    // Live streams must never build latency, so a burst is jumped rather than
+    // slept out; file playback is paced purely by these timestamps, so it can
+    // afford to hold a frame back until its turn.
+    CFTimeInterval maxWait = _isLiveStream ? 0.03 : 0.30;
+    if (delay > maxWait) {
+        // This frame is due far later than the clock allows for (a packet burst
+        // larger than the wait cap, or a timestamp discontinuity): re-anchor on
+        // it rather than sleeping for an unbounded time.
+        [self anchorPresentationClockTo:ptsMs at:now];
+        return;
+    }
+    if (delay > 0) {
+        usleep((useconds_t)(delay * 1000000.0));
+        _paceLogSleepMs += delay * 1000.0;
+    } else if (delay < -0.5) {
+        // Behind schedule by half a second or more (network backlog after a
+        // stall, or a seek): drop the accumulated lag instead of playing it
+        // out in slow motion.
+        [self anchorPresentationClockTo:ptsMs at:now];
+    }
+    [self logPacingStats];
+}
+
+/// Temporary: reports how much pacing was needed, once a second. Remove together
+/// with the pacing investigation.
+- (void)logThroughputStats {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (_statsWindowStart <= 0) {
+        _statsWindowStart = now;
+        return;
+    }
+    if (now - _statsWindowStart < 1.0) {
+        return;
+    }
+    double seconds = now - _statsWindowStart;
+    NSLog(@"[FJKFlow] packets=%d framesDecoded=%d in %.2fs -> %.1f fps",
+          _statsPackets, _statsFrames, seconds, _statsFrames / seconds);
+    _statsWindowStart = now;
+    _statsPackets = 0;
+    _statsFrames = 0;
+}
+
+- (void)logPacingStats {
+    CFTimeInterval now = CACurrentMediaTime();
+    if (_paceLogWindowStart <= 0) {
+        _paceLogWindowStart = now;
+        return;
+    }
+    _paceLogFrames++;
+    if (now - _paceLogWindowStart < 1.0) {
+        return;
+    }
+    double seconds = now - _paceLogWindowStart;
+    NSLog(@"[FJKPacing] frames=%d in %.2fs (%.1f fps), avg sleep %.1f ms",
+          _paceLogFrames, seconds, _paceLogFrames / seconds,
+          _paceLogFrames > 0 ? _paceLogSleepMs / _paceLogFrames : 0.0);
+    _paceLogWindowStart = now;
+    _paceLogFrames = 0;
+    _paceLogSleepMs = 0.0;
 }
 
 - (void)displayFrame:(CVImageBufferRef)imageBuffer pts:(CMTime)pts {
+    CMTime outPts = pts;
+    if (CMTIME_IS_VALID(pts)) {
+        [self waitForPresentationTimeMs:(int64_t)llround(CMTimeGetSeconds(pts) * 1000.0)];
+    } else {
+        outPts = CMTimeMake(_lastVideoPts, 1000);
+    }
+    
     // Render frame to output buffer
     BOOL success = [_renderer renderFrame:imageBuffer];
     if (success) {
-        _currentPosition = CMTimeGetSeconds(pts) * 1000;
+        _lastVideoPts = (int64_t)llround(CMTimeGetSeconds(outPts) * 1000.0);
+        _currentPosition = _lastVideoPts;
         
-        // Notify that a new frame is available
+        // Notify that a new frame is available.
+        //
+        // VideoToolbox calls this back on its own thread, but the texture registry
+        // is engine state owned by the platform thread: touching it from here can
+        // overlap the unregister/register pair a source switch performs and leave
+        // the platform thread waiting. The software decoder path already hops to
+        // the main queue for the same reason; do the same here.
         if (self.frameCallback) {
-            self.frameCallback();
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.frameCallback();
+            });
         }
     }
 }
@@ -1151,13 +1452,9 @@ static void decompressionOutputCallback(
         return NULL;
     }
     
-    // Get the renderer's output buffer
-    CVPixelBufferRef buffer = [_renderer getOutputBuffer];
-    if (buffer) {
-        // Retain for caller - they must release
-        CVPixelBufferRetain(buffer);
-    }
-    return buffer;
+    // The renderer already returns a +1 reference and its published frames are
+    // never overwritten, so ownership simply passes to Flutter here.
+    return [_renderer getOutputBuffer];
 }
 
 - (void)runDecoderLoop {
@@ -1169,6 +1466,11 @@ static void decompressionOutputCallback(
             // Safety: re-check after autoreleasepool setup
             if (!_isPlaying || !_demuxer) break;
             
+            if (_seekPending) {
+                [self performPendingSeek];
+            }
+            [self logThroughputStats];
+            
             // Read packet
             FFPacket *packet = NULL;
             int ret = ff_demuxer_read_packet(_demuxer, &packet); // Returns 0 on success
@@ -1179,6 +1481,7 @@ static void decompressionOutputCallback(
                 
                 // Route packet to appropriate decoder
                 if (packet->stream_index == video_stream_index) {
+                    _statsPackets++;
                     // Video packet - decode with appropriate decoder
                     if (_useSoftwareDecoder) {
                         [self decodeSoftwarePacket:packet];
@@ -1186,13 +1489,11 @@ static void decompressionOutputCallback(
                         [self decodePacket:packet];
                     }
                     
-                    // Adaptive timing based on stream type
+                    // Live streams get the smallest possible delay; file playback
+                    // is paced by the presentation clock from the frame timestamps
+                    // instead, because sleeping here as well made it run at ~0.7x.
                     if (_isLiveStream) {
-                        // Live streams: minimal delay for lowest latency
                         usleep(1000); // 1ms only
-                    } else {
-                        // File playback: respect actual frame rate
-                        usleep((useconds_t)(_targetFrameInterval * 1000000)); // Convert to microseconds
                     }
                 } else if (_audioStreamIndex >= 0 && packet->stream_index == _audioStreamIndex) {
                     // Audio packet - send to audio decoder asynchronously
@@ -1217,6 +1518,20 @@ static void decompressionOutputCallback(
                 if (_isLiveStream && _isPlaying && consecutiveErrors < 50) {
                     usleep(100000); // 100ms backoff before retry
                     continue;
+                }
+                
+                // End of a finite stream: say so instead of leaving the caller
+                // with a frozen last frame and a player that still claims to be
+                // playing. A live stream that dies is a different story — there
+                // it is the stall watchdog on the Dart side that recovers, or the
+                // app that has to reconnect.
+                if (!_isLiveStream) {
+                    [_stateLock lock];
+                    _isPlaying = NO;
+                    _state = FJKPlayerStateCompleted;
+                    [_stateLock unlock];
+                    [self notifyEvent:FJKPlayerEventCompleted arg1:0 arg2:0];
+                    NSLog(@"[FJKNativePlayer] Playback completed");
                 }
                 break;
             }

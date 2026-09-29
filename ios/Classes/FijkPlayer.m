@@ -456,8 +456,10 @@ static const int end = 9;
             return;
         }
         NSError *error = nil;
-        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+        // Recording follows the preview, so it starts where the viewer is.
+        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithSource:_dataSource
                                                                       outputPath:path
+                                                                 startPositionMs:_nativePlayer.currentPosition
                                                                            error:&error];
         if (started) {
             // Notify Dart that recording started
@@ -529,8 +531,10 @@ static const int end = 9;
             return;
         }
         NSError *error = nil;
-        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithRtspUrl:_dataSource
+        // Recording follows the preview, so it starts where the viewer is.
+        BOOL started = [[FFmpegRecorder sharedInstance] startRecordingWithSource:_dataSource
                                                                       outputPath:path
+                                                                 startPositionMs:_nativePlayer.currentPosition
                                                                            error:&error];
         if (started) {
             [_methodChannel invokeMethod:@"_onRecordingStarted" arguments:nil];

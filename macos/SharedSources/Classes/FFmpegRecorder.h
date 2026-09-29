@@ -32,6 +32,17 @@ NS_ASSUME_NONNULL_BEGIN
                        outputPath:(NSString *)outputPath 
                             error:(NSError **)error;
 
+/// Records [source] starting at [startPositionMs].
+///
+/// A local file is paced to playback speed and rewound if it runs out before
+/// the user stops, so the recording follows what the preview showed instead of
+/// copying the whole clip to disk in a few milliseconds. Network streams
+/// already arrive in real time and are recorded as before.
+- (BOOL)startRecordingWithSource:(NSString *)source
+                      outputPath:(NSString *)outputPath
+                 startPositionMs:(int64_t)startPositionMs
+                           error:(NSError **)error;
+
 - (BOOL)startPreRollWithRtspUrl:(NSString *)rtspUrl
                      outputPath:(NSString *)outputPath
                  preRollSeconds:(NSInteger)preRollSeconds

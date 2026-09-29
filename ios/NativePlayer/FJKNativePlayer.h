@@ -21,7 +21,10 @@ typedef NS_ENUM(NSInteger, FJKPlayerState) {
     FJKPlayerStatePlaying = 4,
     FJKPlayerStatePaused = 5,
     FJKPlayerStateStopped = 6,
-    FJKPlayerStateError = 7
+    FJKPlayerStateError = 7,
+    /// Playback ran to the end of the media. A seek (or a start, which rewinds)
+    /// is what takes the player out of this state again.
+    FJKPlayerStateCompleted = 8
 };
 
 // Player events
