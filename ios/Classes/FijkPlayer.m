@@ -42,6 +42,10 @@ static atomic_int atomicId = 0;
     CVPixelBufferRef volatile _latestPixelBuffer;
     CVPixelBufferRef _lastBuffer;
 
+    /// Whether the first video frame has been reported to Dart. The cover image
+    /// in FijkView stays on top of the picture until that happens.
+    BOOL _reportedVideoRenderStart;
+
     int _width;
     int _height;
     int _rotate;
@@ -106,6 +110,7 @@ static const int end = 9;
         _nativePlayer.frameCallback = ^{
             typeof(self) strongSelf = weakSelf;
             if (strongSelf && strongSelf->_vid >= 0) {
+                [strongSelf noteVideoRenderStarted];
                 [strongSelf->_textureRegistry textureFrameAvailable:strongSelf->_vid];
             }
         };
@@ -213,6 +218,20 @@ static const int end = 9;
     
     // Note: textureFrameAvailable is now called by frameCallback
     return pixelBuffer;
+}
+
+/// Tells Dart that a video frame has reached the texture.
+///
+/// FijkView keeps its cover image — the still of a recording, for instance —
+/// over the picture until FijkValue.videoRenderStart turns true, and that flag
+/// is only set by this event. Without it the cover never goes away and a clip
+/// looks frozen while its position keeps moving.
+- (void)noteVideoRenderStarted {
+    if (_reportedVideoRenderStart) {
+        return;
+    }
+    _reportedVideoRenderStart = YES;
+    [_eventSink success:@{@"event": @"rendering_start", @"type": @"video"}];
 }
 
 // MARK: - Event Handling
@@ -346,6 +365,9 @@ static const int end = 9;
     if ([@"setDataSource" isEqualToString:call.method]) {
         NSString *url = call.arguments[@"url"];
         _dataSource = [url copy];
+        // A new source renders from scratch, so its first frame has to be
+        // reported again for the cover image to be taken down.
+        _reportedVideoRenderStart = NO;
         int ret = [_nativePlayer setDataSource:url];
         // NSLog(@"[FijkPlayer] setDataSource returned: %d", ret);
         if (ret == 0) {
@@ -564,6 +586,11 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"snapshot" isEqualToString:call.method]) {
+        // PNG by default; JPEG for captures that end up in a photo library.
+        NSString *format = call.arguments[@"format"];
+        BOOL wantsJpeg = [format isKindOfClass:[NSString class]] &&
+            ([format caseInsensitiveCompare:@"jpeg"] == NSOrderedSame ||
+             [format caseInsensitiveCompare:@"jpg"] == NSOrderedSame);
         CVPixelBufferRef pixelBuffer = [_nativePlayer copyPixelBuffer];
         if (!pixelBuffer) {
             [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": [NSNull null]}];
@@ -582,19 +609,23 @@ static const int end = 9;
             return;
         }
         
-        NSMutableData *pngData = [NSMutableData data];
+        NSMutableData *imageData = [NSMutableData data];
+        CFStringRef imageType = wantsJpeg ? kUTTypeJPEG : kUTTypePNG;
         CGImageDestinationRef dest = CGImageDestinationCreateWithData(
-            (__bridge CFMutableDataRef)pngData, kUTTypePNG, 1, NULL);
+            (__bridge CFMutableDataRef)imageData, imageType, 1, NULL);
         if (dest) {
-            CGImageDestinationAddImage(dest, cgImage, nil);
+            NSDictionary *options = wantsJpeg
+                ? @{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality: @0.92}
+                : nil;
+            CGImageDestinationAddImage(dest, cgImage, (__bridge CFDictionaryRef)options);
             CGImageDestinationFinalize(dest);
             CFRelease(dest);
         }
         CGImageRelease(cgImage);
         
-        if (pngData.length > 0) {
+        if (imageData.length > 0) {
             FlutterStandardTypedData *typedData =
-                [FlutterStandardTypedData typedDataWithBytes:pngData];
+                [FlutterStandardTypedData typedDataWithBytes:imageData];
             [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": typedData}];
         } else {
             [_methodChannel invokeMethod:@"_onSnapshot" arguments:@{@"data": [NSNull null]}];
