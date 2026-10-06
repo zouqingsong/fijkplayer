@@ -310,18 +310,15 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// after you create a [FijkPlayer].
   /// Or else this method returns error.
   ///
-  /// [format] is `png` (the default, lossless) or `jpeg` for something a camera
-  /// roll would accept.
-  ///
   /// Example:
   /// ```
   /// var imageData = await player.takeSnapShot();
   /// var provider = MemoryImage(v);
   /// Widget image = Image(image: provider)
   /// ```
-  Future<Uint8List> takeSnapShot({String format = 'png'}) async {
+  Future<Uint8List> takeSnapShot() async {
     await _nativeSetup.future;
-    FijkLog.i("$this takeSnapShot $format");
+    FijkLog.i("$this takeSnapShot");
     var snapShot = _snapShot;
     if (snapShot != null && !snapShot.isCompleted) {
       return Future.error(StateError("last snapShot is not finished"));
@@ -329,26 +326,15 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     snapShot = Completer<Uint8List>();
     _snapShot = snapShot;
     try {
-      await _channel.invokeMethod(
-          "snapshot", <String, dynamic>{'format': format});
+      await _channel.invokeMethod("snapshot");
     } catch (e) {
       if (!snapShot.isCompleted) {
         snapShot.completeError(e);
       }
       _snapShot = null;
     }
-    // A native side that never answers would leave this pending for ever, and
-    // the caller would never clear its "capturing" state. Give up instead, and
-    // let the next attempt start clean.
-    return snapShot.future.timeout(_snapshotTimeout, onTimeout: () {
-      if (identical(_snapShot, snapShot)) {
-        _snapShot = null;
-      }
-      throw TimeoutException('snapshot timed out', _snapshotTimeout);
-    });
+    return snapShot.future;
   }
-
-  static const Duration _snapshotTimeout = Duration(seconds: 5);
 
   /// Get current recording status
   bool get isRecording => _isRecording;
@@ -444,13 +430,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     // Check if there's an active FFmpeg recording
     bool isCurrentlyRecording = await _channel.invokeMethod("isFFmpegRecording");
     if (!isCurrentlyRecording) {
-      // The native recorder finalises on its own when the source ends, so a
-      // stop that arrives afterwards is a no-op rather than an error: the file
-      // on disk still holds everything that was recorded.
-      FijkLog.i("$this stopFFmpegRecording: nothing to stop");
-      _recording = null;
-      _isRecording = false;
-      return;
+      return Future.error(StateError("No FFmpeg recording in progress"));
     }
     
     FijkLog.i("$this stopFFmpegRecording");
