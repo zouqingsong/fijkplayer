@@ -310,13 +310,16 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
   /// after you create a [FijkPlayer].
   /// Or else this method returns error.
   ///
+  /// [format] selects the image encoding: `"png"` (default) or `"jpeg"`.
+  /// Platforms that cannot encode one of the two fall back to PNG.
+  ///
   /// Example:
   /// ```
   /// var imageData = await player.takeSnapShot();
   /// var provider = MemoryImage(v);
   /// Widget image = Image(image: provider)
   /// ```
-  Future<Uint8List> takeSnapShot() async {
+  Future<Uint8List> takeSnapShot({String? format}) async {
     await _nativeSetup.future;
     FijkLog.i("$this takeSnapShot");
     var snapShot = _snapShot;
@@ -326,7 +329,10 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     snapShot = Completer<Uint8List>();
     _snapShot = snapShot;
     try {
-      await _channel.invokeMethod("snapshot");
+      await _channel.invokeMethod(
+        "snapshot",
+        format == null ? null : <String, dynamic>{"format": format},
+      );
     } catch (e) {
       if (!snapShot.isCompleted) {
         snapShot.completeError(e);
