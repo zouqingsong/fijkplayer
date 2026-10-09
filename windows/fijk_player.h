@@ -51,6 +51,10 @@ private:
 
     std::string data_source_;
 
+    // Whether the first frame has already been reported as rendered, so the UI can
+    // take its cover image off the picture. Cleared when a new source is opened.
+    bool reported_render_start_ = false;
+
     // Recording state
     std::atomic<bool> is_recording_{false};
     std::thread recording_thread_;

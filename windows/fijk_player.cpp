@@ -125,6 +125,19 @@ void FijkPlayer::HandleFrameReady() {
     if (frame && w > 0 && h > 0) {
         texture_->UpdateBuffer(frame, w, h);
         texture_->MarkFrameAvailable();
+
+        // The picture is on the texture now, so the still the UI keeps over it can
+        // come off. Reported once per source: without it a viewer that passes a
+        // cover image shows that still for ever while the video plays behind it.
+        if (!reported_render_start_) {
+            reported_render_start_ = true;
+            if (event_sink_) {
+                flutter::EncodableMap map;
+                map[flutter::EncodableValue("event")] = flutter::EncodableValue("rendering_start");
+                map[flutter::EncodableValue("type")] = flutter::EncodableValue("video");
+                event_sink_->Success(flutter::EncodableValue(map));
+            }
+        }
     }
 }
 
@@ -140,6 +153,8 @@ void FijkPlayer::HandleMethodCall(
             auto it = args->find(flutter::EncodableValue("url"));
             if (it != args->end()) {
                 data_source_ = std::get<std::string>(it->second);
+                // A new source has its own first frame.
+                reported_render_start_ = false;
                 ffplayer_set_data_source(native_player_, data_source_.c_str());
                 result->Success(flutter::EncodableValue(0));
                 return;

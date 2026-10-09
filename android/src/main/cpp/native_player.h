@@ -64,6 +64,14 @@ typedef enum {
     PLAYER_EVENT_INFO            // General info
 } PlayerEvent;
 
+// Codes for PLAYER_EVENT_INFO, passed as arg1
+typedef enum {
+    // The first video frame has reached the surface. The UI paints a still over
+    // the picture until this arrives, so without it a recording plays behind its
+    // own cover image for ever.
+    PLAYER_INFO_VIDEO_RENDER_START = 1
+} PlayerInfoCode;
+
 // Player options
 typedef struct {
     int buffer_size;             // Frame queue size (default: 3)

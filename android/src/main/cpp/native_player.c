@@ -93,6 +93,11 @@ struct NativePlayer {
     double audio_clock;        // Current audio playback position
     int64_t last_video_pts;    // Last video frame PTS for duration calculation
     pthread_mutex_t clock_mutex; // Protect clock access
+
+    // Set once the first video frame has been handed to the surface, and cleared
+    // whenever a new source is opened: the UI keeps a still over the picture until
+    // it hears about it.
+    bool reported_video_render_start;
     
     // Surface
     ANativeWindow* native_window;
@@ -198,6 +203,7 @@ NativePlayer* native_player_create(JNIEnv* env, jobject thiz) {
     player->frame_timer = 0.0;
     player->audio_clock = 0.0;
     player->last_video_pts = AV_NOPTS_VALUE;
+    player->reported_video_render_start = false;
     
     // Initialize packet queues
     packet_queue_init(&player->videoq);
@@ -234,7 +240,10 @@ int native_player_set_data_source(NativePlayer* player, const char* url) {
         free(player->data_source);
     }
     player->data_source = strdup(url);
-    
+    // A new source has its own first frame.
+    player->reported_video_render_start = false;
+    player->stats.frames_rendered = 0;
+
     player->state = PLAYER_STATE_INITIALIZED;
     
     pthread_mutex_unlock(&player->state_mutex);
@@ -342,6 +351,9 @@ int native_player_prepare_async(NativePlayer* player) {
     
     player->state = PLAYER_STATE_PREPARING;
     pthread_mutex_unlock(&player->state_mutex);
+
+    // Nothing is on the surface yet, so the first frame is still to come.
+    player->reported_video_render_start = false;
     
     // Create demuxer
     player->demuxer = ff_demuxer_create();
@@ -1601,6 +1613,15 @@ static void* decoder_thread_func(void* arg) {
         if (recv_ret == 0 && frame) {
             total_frames_received++;
             player->current_position = frame->pts;
+
+            // The first frame is on the surface: the picture is about to replace
+            // whatever the UI was covering it with. Reported once per source, and
+            // before the pacing below so the cover comes off at the first frame
+            // rather than after its delay.
+            if (!player->reported_video_render_start) {
+                player->reported_video_render_start = true;
+                post_event(player, PLAYER_EVENT_INFO, PLAYER_INFO_VIDEO_RENDER_START, 0);
+            }
             
             // Calculate frame duration and sync delay (ijkplayer algorithm)
             double frame_duration = 0.04;  // Default 40ms (~25fps)

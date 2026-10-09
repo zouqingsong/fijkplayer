@@ -197,7 +197,16 @@ static const int end = 9;
         return;
     }
     _reportedVideoRenderStart = YES;
-    [_eventSink success:@{@"event": @"rendering_start", @"type": @"video"}];
+    // The frame callback runs on the player's own thread, and FijkQueuingEventSink
+    // passes the event straight to Flutter's sink, which may only be used from the
+    // platform thread.
+    FijkQueuingEventSink *sink = _eventSink;
+    if (!sink) {
+        return;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [sink success:@{@"event" : @"rendering_start", @"type" : @"video"}];
+    });
 }
 
 // MARK: - Event Handling

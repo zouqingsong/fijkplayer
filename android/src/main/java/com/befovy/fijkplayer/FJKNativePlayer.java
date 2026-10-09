@@ -43,6 +43,9 @@ public class FJKNativePlayer {
     public static final int EVENT_BUFFERING = 7;
     public static final int EVENT_INFO = 8;
 
+    /** Codes the native player posts as {@code arg1} of {@link #EVENT_INFO}. */
+    public static final int INFO_VIDEO_RENDER_START = 1;
+
     /**
      * Constructor
      */

@@ -1097,6 +1097,9 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
         final EventStreamHandler eventStreamHandler;
         EventChannel.EventSink eventSink;
 
+        // Every event is delivered on this, whatever thread raised it.
+        private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
         // FijkState values matching Dart enum
         private static final int STATE_IDLE = 0;
         private static final int STATE_INITIALIZED = 1;
@@ -1144,10 +1147,40 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             event.put("new", newState);
             event.put("old", oldState);
 
-            if (eventSink != null) {
-                eventSink.success(event);
-                Log.d(TAG, "State changed: " + oldState + " -> " + newState);
+            sendEvent(event);
+            Log.d(TAG, "State changed: " + oldState + " -> " + newState);
+        }
+
+        /**
+         * Delivers one event to Flutter, from the main thread.
+         *
+         * The native player raises its events on whichever thread noticed them - the
+         * first frame comes from the video decoder thread, for one - and Flutter's
+         * DartMessenger refuses to be called from anywhere but the main thread: it
+         * throws "Methods marked with @UiThread must be executed on the main
+         * thread", which kills the process.
+         *
+         * An event raised on the main thread is sent straight through, so the order
+         * the Dart side has always seen is unchanged - in particular a state change
+         * raised while a method call is being served still reaches Dart before that
+         * call's reply. Only the ones that arrive on a thread of the player's own
+         * are queued, and then they keep their own order among themselves.
+         */
+        private void sendEvent(Map<String, Object> event) {
+            if (eventSink == null) {
+                return;
             }
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                eventSink.success(event);
+                return;
+            }
+            mainHandler.post(
+                () -> {
+                    EventChannel.EventSink sink = eventSink;
+                    if (sink != null) {
+                        sink.success(event);
+                    }
+                });
         }
 
         void handleNativeEvent(int eventType, int arg1, int arg2) {
@@ -1156,13 +1189,11 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             case FJKNativePlayer.EVENT_PREPARED:
                 sendStateChange(STATE_PREPARED);
                 // Send 'prepared' event with duration so Dart side gets the duration value
-                if (eventSink != null) {
-                    long durationMs = player.getDuration();
-                    Map<String, Object> preparedEvent = new HashMap<>();
-                    preparedEvent.put("event", "prepared");
-                    preparedEvent.put("duration", (int)durationMs);
-                    eventSink.success(preparedEvent);
-                }
+                long durationMs = player.getDuration();
+                Map<String, Object> preparedEvent = new HashMap<>();
+                preparedEvent.put("event", "prepared");
+                preparedEvent.put("duration", (int)durationMs);
+                sendEvent(preparedEvent);
                 break;
             case FJKNativePlayer.EVENT_STARTED:
                 sendStateChange(STATE_STARTED);
@@ -1176,13 +1207,11 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
             case FJKNativePlayer.EVENT_ERROR:
                 sendStateChange(STATE_ERROR);
                 // Also send error event with details
-                if (eventSink != null) {
-                    Map<String, Object> errorEvent = new HashMap<>();
-                    errorEvent.put("event", eventType);
-                    errorEvent.put("arg1", arg1);
-                    errorEvent.put("arg2", arg2);
-                    eventSink.success(errorEvent);
-                }
+                Map<String, Object> errorEvent = new HashMap<>();
+                errorEvent.put("event", eventType);
+                errorEvent.put("arg1", arg1);
+                errorEvent.put("arg2", arg2);
+                sendEvent(errorEvent);
                 break;
             case FJKNativePlayer.EVENT_VIDEO_SIZE_CHANGED:
                 // Cache video size
@@ -1194,19 +1223,27 @@ public class FijkPlayerHandler implements MethodChannel.MethodCallHandler {
                 sizeEvent.put("event", "size_changed");
                 sizeEvent.put("width", arg1);
                 sizeEvent.put("height", arg2);
-                if (eventSink != null) {
-                    eventSink.success(sizeEvent);
+                sendEvent(sizeEvent);
+                break;
+            case FJKNativePlayer.EVENT_INFO:
+                // The first video frame is on the surface. Dart turns this into
+                // FijkValue.videoRenderStart, which is what takes the still off the
+                // picture; without it a recording plays behind its own cover.
+                if (arg1 == FJKNativePlayer.INFO_VIDEO_RENDER_START) {
+                    Map<String, Object> renderEvent = new HashMap<>();
+                    renderEvent.put("event", "rendering_start");
+                    renderEvent.put("type", "video");
+                    sendEvent(renderEvent);
+                    Log.i(TAG, "Video rendering started: player=" + playerId);
                 }
                 break;
             default:
                 // Send other events as-is (buffering, seek complete, etc.)
-                if (eventSink != null) {
-                    Map<String, Object> genericEvent = new HashMap<>();
-                    genericEvent.put("event", eventType);
-                    genericEvent.put("arg1", arg1);
-                    genericEvent.put("arg2", arg2);
-                    eventSink.success(genericEvent);
-                }
+                Map<String, Object> genericEvent = new HashMap<>();
+                genericEvent.put("event", eventType);
+                genericEvent.put("arg1", arg1);
+                genericEvent.put("arg2", arg2);
+                sendEvent(genericEvent);
                 break;
             }
         }
