@@ -252,13 +252,23 @@ void FijkPlayer::HandleMethodCall(
         const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
         std::string output_path;
         if (args) {
-            auto it = args->find(flutter::EncodableValue("outputPath"));
-            if (it != args->end()) {
-                output_path = std::get<std::string>(it->second);
+            // Dart sends "path" (as Android, iOS and macOS all expect). The old
+            // "outputPath" spelling is still accepted so a caller written against
+            // it keeps working.
+            for (const char* key : {"path", "outputPath"}) {
+                auto it = args->find(flutter::EncodableValue(key));
+                if (it != args->end()) {
+                    if (const auto* value = std::get_if<std::string>(&it->second)) {
+                        output_path = *value;
+                    }
+                    if (!output_path.empty()) {
+                        break;
+                    }
+                }
             }
         }
         if (output_path.empty() || data_source_.empty()) {
-            result->Error("INVALID_ARGS", "Missing outputPath or data source");
+            result->Error("INVALID_ARGS", "Missing path or data source");
             return;
         }
         recording_path_ = output_path;

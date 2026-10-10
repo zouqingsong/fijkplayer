@@ -1,6 +1,6 @@
 name: fijkplayer
 description: Flutter media player plugin with native FFmpeg support for RTSP, HTTP, HLS streaming with hardware-accelerated decoding
-version: 0.11.3
+version: 0.11.5
 homepage: https://github.com/zouqingsong/fijkplayer
 repository: https://github.com/zouqingsong/fijkplayer.git
 issue_tracker: https://github.com/zouqingsong/fijkplayer/issues

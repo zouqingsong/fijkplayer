@@ -115,6 +115,12 @@ struct FijkLinuxPlayer {
     FlEventSink* event_sink;
     FlTextureRegistrar* texture_registrar;
     std::string data_source;
+
+    // Recording. The recorder is the FFmpeg CLI the plugin already ships, run on
+    // a thread of its own: `ffmpeg_kit_execute` blocks until the recording stops,
+    // and the thread this handler runs on is the one the UI lives on.
+    bool is_recording = false;
+    std::string recording_path;
 };
 
 static void player_event_callback(void* opaque, FFPlayerEvent event, int arg1, int arg2) {
@@ -164,6 +170,13 @@ static FijkLinuxPlayer* player_create(FlPluginRegistrar* registrar,
 
 static void player_destroy(FijkLinuxPlayer* p) {
     if (!p) return;
+    // Stop a recording before the player goes: the recorder thread holds nothing
+    // of this object, but the file has to be finalised rather than left as a
+    // header with no index.
+    if (p->is_recording) {
+        p->is_recording = false;
+        ffmpeg_kit_cancel();
+    }
     if (p->native_player) {
         ffplayer_destroy(p->native_player);
         p->native_player = NULL;
@@ -184,6 +197,51 @@ G_DEFINE_TYPE(FijkplayerPlugin, fijkplayer_plugin, g_object_get_type())
 
 static std::map<int, FijkLinuxPlayer*> g_players;
 static int g_next_player_id = 0;
+
+// ========== Recording ==========
+
+/// What a recorder thread needs. Owned by that thread, so nothing here points at
+/// the player: the app can close the preview while FFmpeg is still finishing its
+/// file, and the thread must survive that.
+struct FijkRecorderJob {
+    std::string source;
+    std::string output;
+};
+
+/// Runs the embedded FFmpeg CLI with [args] (no program name) and returns its
+/// exit code. Shared by the recorder thread and the ffmpeg_kit channel.
+static int run_ffmpeg_arguments(const std::vector<std::string>& args) {
+    int argc = (int)args.size() + 1;
+    char** argv = new char*[argc + 1];
+    argv[0] = strdup("ffmpeg");
+    for (int i = 0; i < (int)args.size(); i++) {
+        argv[i + 1] = strdup(args[i].c_str());
+    }
+    argv[argc] = NULL;
+
+    int ret = ffmpeg_kit_execute(argc, argv);
+
+    for (int i = 0; i < argc; i++) free(argv[i]);
+    delete[] argv;
+    return ret;
+}
+
+/// Records [source] to [output] until it is cancelled.
+static gpointer recorder_thread(gpointer data) {
+    FijkRecorderJob* job = (FijkRecorderJob*)data;
+    // The same command the Windows recorder uses, so a clip recorded on Linux is
+    // the same kind of file: copied, not re-encoded, and seekable at the front.
+    run_ffmpeg_arguments({
+        "-y",
+        "-rtsp_transport", "tcp",
+        "-i", job->source,
+        "-c", "copy",
+        "-movflags", "+faststart",
+        job->output,
+    });
+    delete job;
+    return NULL;
+}
 
 static void handle_player_method_call(FlMethodChannel* channel,
                                        FlMethodCall* method_call,
@@ -257,11 +315,54 @@ static void handle_player_method_call(FlMethodChannel* channel,
         response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(dur)));
     }
     else if (strcmp(method, "startFFmpegRecording") == 0 ||
-             strcmp(method, "stopFFmpegRecording") == 0 ||
-             strcmp(method, "isFFmpegRecording") == 0 ||
-             strcmp(method, "startRecording") == 0 ||
+             strcmp(method, "startRecording") == 0) {
+        FlValue* path_val = fl_value_lookup_string(args, "path");
+        std::string output = path_val ? fl_value_get_string(path_val) : "";
+        if (output.empty() || player->data_source.empty()) {
+            response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+                "INVALID_ARGS", "Missing path or data source", NULL));
+        } else if (player->is_recording) {
+            response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(FALSE)));
+        } else {
+            player->is_recording = true;
+            player->recording_path = output;
+            // Dart waits for this before it considers the recording started, so
+            // it is sent from here rather than from the recorder thread, which
+            // cannot touch the method channel.
+            if (player->method_channel) {
+                fl_method_channel_invoke_method(
+                    player->method_channel, "_onRecordingStarted", NULL, NULL, NULL, NULL);
+            }
+            FijkRecorderJob* job = new FijkRecorderJob();
+            job->source = player->data_source;
+            job->output = output;
+            g_thread_new("fijk-recorder", recorder_thread, job);
+            response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+        }
+    }
+    else if (strcmp(method, "stopFFmpegRecording") == 0 ||
              strcmp(method, "stopRecording") == 0) {
-        response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(FALSE)));
+        if (player->is_recording) {
+            // Cancelling makes FFmpeg finish its file and exit. Awaiting that here
+            // would block the UI while a long clip is indexed, so Dart is told
+            // the recording stopped and the file settles on its own.
+            player->is_recording = false;
+            ffmpeg_kit_cancel();
+            if (player->method_channel) {
+                g_autoptr(FlValue) map = fl_value_new_map();
+                fl_value_set_string_take(map, "path",
+                                         fl_value_new_string(player->recording_path.c_str()));
+                fl_method_channel_invoke_method(
+                    player->method_channel, "_onRecordingStopped", map, NULL, NULL, NULL);
+            }
+            response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(TRUE)));
+        } else {
+            response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_bool(FALSE)));
+        }
+    }
+    else if (strcmp(method, "isFFmpegRecording") == 0) {
+        response = FL_METHOD_RESPONSE(
+            fl_method_success_response_new(fl_value_new_bool(player->is_recording)));
     }
     else {
         response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
@@ -368,19 +469,7 @@ static void handle_ffmpeg_kit_method_call(FlMethodChannel* channel,
         if (cmd_args.empty()) {
             response = FL_METHOD_RESPONSE(fl_method_error_response_new("INVALID_ARGS", "No command provided", NULL));
         } else {
-            int argc = (int)cmd_args.size() + 1;
-            char** argv = new char*[argc + 1];
-            argv[0] = strdup("ffmpeg");
-            for (int i = 0; i < (int)cmd_args.size(); i++) {
-                argv[i + 1] = strdup(cmd_args[i].c_str());
-            }
-            argv[argc] = NULL;
-
-            int ret = ffmpeg_kit_execute(argc, argv);
-
-            for (int i = 0; i < argc; i++) free(argv[i]);
-            delete[] argv;
-
+            int ret = run_ffmpeg_arguments(cmd_args);
             response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(ret)));
         }
     }

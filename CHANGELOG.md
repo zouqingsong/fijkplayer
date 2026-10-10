@@ -3,6 +3,23 @@
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
 ---
+## 0.11.5 (2026-10-10)
+
+* wire `startFFmpegPreRoll` / `commitFFmpegPreRoll` on macOS: the recorder that
+  was already shared with iOS keeps a ring buffer of the last seconds, and the
+  macOS channel now reaches it, so pre-recorded RTSP clips work on macOS as they
+  already did on Android and iOS.
+
+---
+## 0.11.4 (2026-10-10)
+
+* fix Windows build failure (C2220: warning C4005) when the plugin shares a
+  registrant with another Windows plugin such as camera_windows: the public
+  header no longer redefines FLUTTER_PLUGIN_EXPORT with a different expansion
+  and now declares dllimport for consumers on Windows, matching Flutter's own
+  plugin headers.
+
+---
 ## [0.11.0](https://github.com/befovy/fijkplayer/compare/v0.10.1...v0.11.0) (2023-07-23)
 * migrate to sdk: ">=2.14.0 <4.0.0"
 
