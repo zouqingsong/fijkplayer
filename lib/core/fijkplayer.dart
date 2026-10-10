@@ -553,6 +553,17 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
       } on PlatformException catch (e) {
         return _errorListener(e);
       }
+      // Accepting a source puts the player in `initialized`, and this used to be
+      // left to the platform to announce. The desktop FFmpeg player announces
+      // nothing, so the state stayed `idle` and `autoPlay` — which is
+      // `start()` — refused the source it had just been given with "call start
+      // on invalid state FijkState.idle". Setting it here costs nothing on the
+      // platforms that do announce it, and means the flag does not depend on
+      // which of two channels answers first. `prepared` is cleared with it, as
+      // the platforms that report this state clear it: a new source has no
+      // duration and no first frame yet.
+      _setValue(
+          value.copyWith(state: FijkState.initialized, prepared: false));
       if (autoPlay == true) {
         await start();
       } else if (showCover == true) {
@@ -574,8 +585,7 @@ class FijkPlayer extends ChangeNotifier implements ValueListenable<FijkValue> {
     if (state == FijkState.initialized) {
       FijkLog.i("$this invoke prepareAsync");
       await _channel.invokeMethod("prepareAsync");
-    } else {
-      FijkLog.e("$this prepareAsync invalid state:$state");
+    } else {      FijkLog.e("$this prepareAsync invalid state:$state");
       return Future.error(StateError("prepareAsync on invalid state $state"));
     }
   }

@@ -3,6 +3,61 @@
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
 ---
+## 0.11.8 (2026-10-10)
+
+* fix recording a **file** source on Windows — a bundled sample, say — which wrote
+  nothing at all and left the app reporting "Recording failed" when the button was
+  pressed again. The recorder passed `-rtsp_transport tcp` whatever the source was,
+  and that option belongs to the RTSP input: ffmpeg refuses the run outright with
+  "Option rtsp_transport not found" before writing a byte. A network source gets
+  the transport (and a 5 s read timeout now, so a camera that stops sending ends
+  the run instead of holding it), a file source does not.
+* recording now reports its own end. A file source finishes by itself long before
+  the button is pressed again, and the old code noticed only that the flag had gone
+  false — it never told Dart, so the app waited for a clip that was already on
+  disk. The run that writes the file is the one that reports it, and a run that
+  wrote nothing reports the failure instead of leaving it to be discovered as a
+  missing file.
+* stopping a recording now asks ffmpeg to stop and waits for it, rather than
+  killing it and returning: the trailer (and the `+faststart` move with it) has to
+  be written for the clip to be playable, and the caller reads the file as soon as
+  the call returns. The recording thread is joined on shutdown too, where it used
+  to be left detached and running while the player's channels were destroyed.
+
+---
+## 0.11.7 (2026-10-10)
+
+* fix `setDataSource(..., autoPlay: true)` on Windows, which refused the source it
+  had just been given with `Bad state: call start on invalid state
+  FijkState.idle`. Accepting a source is the `initialized` state, and Dart waited
+  for the platform to announce it — the desktop FFmpeg player announces nothing,
+  so the flag stayed `idle` and the `autoPlay` that follows was rejected. Dart now
+  sets it when the source is accepted, and the Windows plugin reports the state it
+  reached for `setDataSource` and `prepareAsync` as well.
+* honour `start-on-prepared` in the Windows plugin instead of ignoring it, as
+  ijkplayer does on the other platforms. Dart waits at most 6 s for the player to
+  become prepared while opening a stream can take 10, so a slow camera opened and
+  then sat there: the wait was over and nothing was left to tell the player to
+  begin. With the option honoured, the player starts itself as soon as it can.
+
+---
+## 0.11.6 (2026-10-10)
+
+* fix playback on Windows, which did not play anything and reported
+  `MissingPluginException: setOption` before it even began. Two causes, both in
+  the Windows plugin:
+  * `setOption` and `applyOptions` were not handled, so every `start()` — which
+    sets `start-on-prepared` first — failed on the method channel. They are now
+    compatibility no-ops, as they already are on macOS.
+  * the player's events were forwarded to Dart as their numeric enum, but Dart
+    switches on event *names* and never saw any of them. The state machine
+    therefore stayed in `initialized` and never told the backend to start — and
+    since the desktop FFmpeg player waits for that explicit start before
+    decoding, the preview stayed black. `state_change`, `prepared`,
+    `size_changed`, `seek_complete` and `error` are now sent by name, so the
+    picture plays.
+
+---
 ## 0.11.5 (2026-10-10)
 
 * wire `startFFmpegPreRoll` / `commitFFmpegPreRoll` on macOS: the recorder that
