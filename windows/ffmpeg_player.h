@@ -14,6 +14,18 @@ extern "C" {
 
 typedef struct FFmpegPlayer FFmpegPlayer;
 
+// How long a packet may be held back for, by default, and at either end of the
+// scale. The live end is where MicVisionX's real-time mode sits; the default is
+// what this backend used before the choice existed.
+#define FFPLAYER_DEFAULT_BUFFER_MS 500
+#define FFPLAYER_SMOOTH_BUFFER_MS 1500
+#define FFPLAYER_MIN_BUFFER_MS 50
+#define FFPLAYER_MAX_BUFFER_MS 10000
+
+// At or below this the backend plays live: no demuxer reordering, no read-ahead,
+// and frames emitted as soon as they are decoded.
+#define FFPLAYER_LOW_LATENCY_MS 200
+
 // Player states (matching Dart FijkState)
 typedef enum {
     FFPLAYER_STATE_IDLE = 0,
@@ -62,6 +74,19 @@ int ffplayer_stop(FFmpegPlayer *player);
 int ffplayer_reset(FFmpegPlayer *player);
 int ffplayer_seek(FFmpegPlayer *player, int64_t msec);
 void ffplayer_set_volume(FFmpegPlayer *player, float volume);
+
+// How much delay to trade for smoothness, in milliseconds.
+//
+// The one knob the UI has over latency, and the only one this backend has to
+// offer: it decodes every frame as it arrives and keeps no queue of its own, so
+// the buffering it can spend is the demuxer's (its reorder/delay buffer) and the
+// decoder's (its reorder buffer). A budget of `kLowLatencyMs` or less is treated
+// as "live": no demuxer reordering, no input buffering, and the low-delay codec
+// flag, which makes a codec with B-frames emit each frame at once.
+//
+// Meaningful only before the source is opened: the options it writes go to
+// avformat_open_input, which happens once per source.
+void ffplayer_set_playback_mode(FFmpegPlayer *player, int buffer_ms);
 
 // Video frame access (RGBA format for Flutter texture)
 // Returns a pointer to the current RGBA frame data, or NULL if no frame ready

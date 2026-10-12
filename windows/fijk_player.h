@@ -67,6 +67,11 @@ private:
     // else would ever start the player.
     bool start_on_prepared_ = false;
 
+    // The latency budget Dart asked for, in milliseconds, from the app's
+    // stream-quality setting. Kept here because it is an input option: it is
+    // applied when a source is set, whichever order the two calls arrive in.
+    int playback_buffer_ms_ = FFPLAYER_DEFAULT_BUFFER_MS;
+
     // Tells Dart the player moved to [state]. The Dart side switches on named
     // events and keeps its own state machine from them; without these it never
     // leaves `initialized`, and since this backend waits for an explicit start

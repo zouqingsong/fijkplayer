@@ -6,6 +6,7 @@
 #include <flutter/standard_method_codec.h>
 #include <atomic>
 #include <filesystem>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -25,6 +26,8 @@ static void frame_callback(void* opaque) {
     auto* player = static_cast<FijkPlayer*>(opaque);
     player->HandleFrameReady();
 }
+
+#include <optional>
 
 namespace {
 
@@ -60,6 +63,38 @@ bool OptionValueIsOn(const flutter::EncodableMap& args) {
         return *large != 0;
     }
     return false;
+}
+
+// An integer field of a method's arguments. The standard codec sends an integer
+// as int32 or int64 depending on its size, and either is accepted.
+std::optional<int> IntField(const flutter::EncodableMap* args, const char* key) {
+    if (args == nullptr) {
+        return std::nullopt;
+    }
+    const auto it = args->find(flutter::EncodableValue(key));
+    if (it == args->end()) {
+        return std::nullopt;
+    }
+    if (const auto* small = std::get_if<int32_t>(&it->second)) {
+        return *small;
+    }
+    if (const auto* large = std::get_if<int64_t>(&it->second)) {
+        return static_cast<int>(*large);
+    }
+    return std::nullopt;
+}
+
+// The latency budget a `setPlaybackMode` call asks for, or 0 when it does not
+// name one. `customBufferMs` is the app's own number; `maxLatencyMs` is the
+// ceiling the mode implies, used when no buffer was named.
+int RequestedBufferMs(const flutter::EncodableMap* args) {
+    if (const auto custom = IntField(args, "customBufferMs")) {
+        return *custom;
+    }
+    if (const auto latency = IntField(args, "maxLatencyMs")) {
+        return *latency;
+    }
+    return 0;
 }
 
 }  // namespace
@@ -344,6 +379,11 @@ void FijkPlayer::HandleMethodCall(
                 // previous source would start a player that was meant to wait.
                 reported_render_start_ = false;
                 start_on_prepared_ = false;
+                // The latency budget is written into the options
+                // avformat_open_input takes, so it is applied here rather than
+                // only where it was asked for: a source set after the call still
+                // opens with the budget the user chose.
+                ffplayer_set_playback_mode(native_player_, playback_buffer_ms_);
                 int ret = ffplayer_set_data_source(native_player_, data_source_.c_str());
                 // Accepting a source is a state (initialized), and Dart starts
                 // the player as soon as this call returns. Nothing else tells it
@@ -389,6 +429,18 @@ void FijkPlayer::HandleMethodCall(
         ReportState(ffplayer_get_state(native_player_));
         result->Success(flutter::EncodableValue(ret));
     }
+    else if (method == "setPlaybackMode") {
+        // How much delay to trade for smoothness. Dart calls this before opening
+        // a source; the number is kept and re-applied whenever one is set, since
+        // the options it feeds are read once, when the source is opened.
+        const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+        const int requested = RequestedBufferMs(args);
+        if (requested > 0) {
+            playback_buffer_ms_ = requested;
+            ffplayer_set_playback_mode(native_player_, playback_buffer_ms_);
+        }
+        result->Success(flutter::EncodableValue(0));
+    }
     else if (method == "setOption") {
         // One option is acted on; the rest are compatibility no-ops, as they are
         // on macOS. The options Dart sets are ijkplayer's: `enable-snapshot`,
@@ -405,6 +457,13 @@ void FijkPlayer::HandleMethodCall(
         result->Success(flutter::EncodableValue(0));
     }
     else if (method == "applyOptions") {
+        result->Success(flutter::EncodableValue(0));
+    }
+    else if (method == "logLevel") {
+        // The Dart side sets a log level for the player and its native half. This
+        // backend reports nothing to such a log — failures arrive as events, and
+        // a recording's progress as its own callbacks — so the level is accepted
+        // and not acted on, rather than left to fail the call.
         result->Success(flutter::EncodableValue(0));
     }
     else if (method == "seekTo") {

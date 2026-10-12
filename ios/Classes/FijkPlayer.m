@@ -19,6 +19,27 @@
 #import <libkern/OSAtomic.h>
 #import <stdatomic.h>
 
+/// An integer method argument, whether it is absent, a number, or `NSNull`.
+///
+/// A field the caller left out arrives as nil, and one the caller sent as null
+/// arrives as `NSNull` — an object, which does not answer `integerValue`. Sending
+/// that selector throws and terminates the app, so every argument is read through
+/// here instead and an absent one falls back to `fallback`.
+static NSInteger FijkIntArg(id value, NSInteger fallback) {
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber *)value integerValue];
+    }
+    return fallback;
+}
+
+/// The argument as a number, or nil when it is absent or was sent as null.
+///
+/// Needed because `NSNull` is a truthy object: the usual `if (value)` guard lets
+/// it through and the conversion that follows throws.
+static NSNumber *FijkNumberArg(id value) {
+    return [value isKindOfClass:[NSNumber class]] ? (NSNumber *)value : nil;
+}
+
 @interface FijkPlugin ()
 - (void)onPlayingChange:(int)delta;
 - (void)onPlayableChange:(int)delta;
@@ -432,12 +453,14 @@ static const int end = 9;
         result(@(_nativePlayer.duration));
         
     } else if ([@"seekTo" isEqualToString:call.method]) {
-        NSNumber *msec = call.arguments[@"msec"];
-        [_nativePlayer seekTo:[msec longLongValue]];
+        NSNumber *msec = FijkNumberArg(call.arguments[@"msec"]);
+        if (msec) {
+            [_nativePlayer seekTo:[msec longLongValue]];
+        }
         result(@(0));
         
     } else if ([@"setVolume" isEqualToString:call.method]) {
-        NSNumber *volume = call.arguments[@"volume"];
+        NSNumber *volume = FijkNumberArg(call.arguments[@"volume"]);
         if (volume && _nativePlayer) {
             [_nativePlayer setVolume:[volume floatValue]];
         }
@@ -456,20 +479,27 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"setPlaybackMode" isEqualToString:call.method]) {
-        NSNumber *mode = call.arguments[@"mode"];
-        NSNumber *bufferMs = call.arguments[@"bufferMs"];
-        NSNumber *enableAudio = call.arguments[@"enableAudio"];
-        NSNumber *maxLatencyMs = call.arguments[@"maxLatencyMs"];
-        NSNumber *enableFrameDrop = call.arguments[@"enableFrameDrop"];
+        // A missing argument arrives as nil and one sent as null arrives as
+        // NSNull; `[NSNull integerValue]` throws and terminates the app, so both
+        // are read through the same helper and fall back to the native default.
+        // The buffer is read under the name Dart uses, with the older name as a
+        // fallback for callers that used it.
+        id bufferArg = call.arguments[@"customBufferMs"] ?: call.arguments[@"bufferMs"];
+        NSInteger modeValue = FijkIntArg(call.arguments[@"mode"], 1);
+        NSInteger bufferMsValue = FijkIntArg(bufferArg, -1);
+        NSInteger enableAudioValue = FijkIntArg(call.arguments[@"enableAudio"], -1);
+        NSInteger maxLatencyMsValue = FijkIntArg(call.arguments[@"maxLatencyMs"], -1);
+        NSInteger enableFrameDropValue = FijkIntArg(call.arguments[@"enableFrameDrop"], -1);
         
-        int ret = [_nativePlayer setPlaybackMode:[mode integerValue]
-                                        bufferMs:[bufferMs integerValue]
-                                     enableAudio:[enableAudio integerValue]
-                                   maxLatencyMs:[maxLatencyMs integerValue]
-                                 enableFrameDrop:[enableFrameDrop integerValue]];
+        int ret = [_nativePlayer setPlaybackMode:modeValue
+                                        bufferMs:bufferMsValue
+                                     enableAudio:enableAudioValue
+                                   maxLatencyMs:maxLatencyMsValue
+                                 enableFrameDrop:enableFrameDropValue];
         
-        NSLog(@"[FijkPlayer] setPlaybackMode: mode=%@, buffer=%@ms, audio=%@, latency=%@ms, frameDrop=%@, result=%d",
-              mode, bufferMs, enableAudio, maxLatencyMs, enableFrameDrop, ret);
+        NSLog(@"[FijkPlayer] setPlaybackMode: mode=%ld, buffer=%ldms, audio=%ld, latency=%ldms, frameDrop=%ld, result=%d",
+              (long)modeValue, (long)bufferMsValue, (long)enableAudioValue,
+              (long)maxLatencyMsValue, (long)enableFrameDropValue, ret);
         
         result(@(ret));
         
@@ -514,7 +544,7 @@ static const int end = 9;
         NSError *error = nil;
         BOOL started = [[FFmpegRecorder sharedInstance] startPreRollWithRtspUrl:_dataSource
                                                                     outputPath:path
-                                                                preRollSeconds:preRollSeconds ? [preRollSeconds integerValue] : 5
+                                                                preRollSeconds:FijkIntArg(preRollSeconds, 5)
                                                                          error:&error];
         if (started) {
             result(@(0));

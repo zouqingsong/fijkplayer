@@ -84,6 +84,11 @@ struct FFmpegPlayer {
     int64_t duration_ms;
     volatile int64_t current_pos_ms;
     float volume;
+
+    // How much delay the caller is willing to accept, in milliseconds (see
+    // ffplayer_set_playback_mode). The starting value is what this backend used
+    // before the choice existed: half a second of demuxer slack.
+    int buffer_ms;
     
     // Threading
     thread_t read_thread;
@@ -98,6 +103,17 @@ struct FFmpegPlayer {
     void *frame_opaque;
 };
 
+static bool is_network_url(const char *url) {
+    if (!url) return false;
+    return strstr(url, "rtsp://") != NULL || strstr(url, "rtmp://") != NULL ||
+           strstr(url, "http://") != NULL || strstr(url, "https://") != NULL ||
+           strstr(url, "udp://") != NULL || strstr(url, "tcp://") != NULL;
+}
+
+static bool is_low_latency(const FFmpegPlayer *p) {
+    return p->buffer_ms <= FFPLAYER_LOW_LATENCY_MS;
+}
+
 FFmpegPlayer *ffplayer_create(void) {
     FFmpegPlayer *p = (FFmpegPlayer *)calloc(1, sizeof(FFmpegPlayer));
     if (!p) return NULL;
@@ -106,6 +122,7 @@ FFmpegPlayer *ffplayer_create(void) {
     p->video_stream_idx = -1;
     p->audio_stream_idx = -1;
     p->volume = 1.0f;
+    p->buffer_ms = FFPLAYER_DEFAULT_BUFFER_MS;
     
     mutex_init(&p->mutex);
     cond_init(&p->cond);
@@ -163,6 +180,13 @@ static void fire_event(FFmpegPlayer *p, FFPlayerEvent event, int arg1, int arg2)
     }
 }
 
+void ffplayer_set_playback_mode(FFmpegPlayer *p, int buffer_ms) {
+    if (!p) return;
+    if (buffer_ms < FFPLAYER_MIN_BUFFER_MS) buffer_ms = FFPLAYER_MIN_BUFFER_MS;
+    if (buffer_ms > FFPLAYER_MAX_BUFFER_MS) buffer_ms = FFPLAYER_MAX_BUFFER_MS;
+    p->buffer_ms = buffer_ms;
+}
+
 int ffplayer_set_data_source(FFmpegPlayer *p, const char *url) {
     if (!p || !url) return -1;
     if (p->state != FFPLAYER_STATE_IDLE) return -1;
@@ -180,7 +204,23 @@ static int open_streams(FFmpegPlayer *p) {
     AVDictionary *options = NULL;
     if (strstr(p->url, "rtsp://")) {
         av_dict_set(&options, "rtsp_transport", "tcp", 0);
-        av_dict_set(&options, "max_delay", "500000", 0);
+    }
+    // A network source is where the latency budget is spent: how long the demuxer
+    // may hold a packet back waiting for one that overtakes it, and — at the live
+    // end — whether it may buffer the input at all. A local file has nothing to
+    // buffer and is left alone.
+    if (is_network_url(p->url)) {
+        av_dict_set_int(&options, "max_delay", (int64_t)p->buffer_ms * 1000, 0);
+        if (is_low_latency(p)) {
+            // `nobuffer` drops the demuxer's read-ahead, and a reorder queue of
+            // zero means a packet is decoded the moment it arrives rather than
+            // after the one that might have preceded it.
+            av_dict_set(&options, "fflags", "nobuffer", 0);
+            av_dict_set_int(&options, "reorder_queue_size", 0, 0);
+        } else if (p->buffer_ms >= FFPLAYER_SMOOTH_BUFFER_MS) {
+            // The other end: a queue deep enough to ride out a burst of jitter.
+            av_dict_set_int(&options, "reorder_queue_size", 16, 0);
+        }
     }
     av_dict_set(&options, "timeout", "10000000", 0);
     
@@ -204,6 +244,12 @@ static int open_streams(FFmpegPlayer *p) {
             p->video_dec_ctx = avcodec_alloc_context3(codec);
             avcodec_parameters_to_context(p->video_dec_ctx, st->codecpar);
             p->video_dec_ctx->thread_count = 2;
+            // A codec with B-frames otherwise holds a frame back until the ones
+            // it depends on have arrived. At the live end that wait is the
+            // latency the user is trying not to have.
+            if (is_low_latency(p)) {
+                p->video_dec_ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+            }
             
             ret = avcodec_open2(p->video_dec_ctx, codec, NULL);
             if (ret < 0) { avcodec_free_context(&p->video_dec_ctx); continue; }

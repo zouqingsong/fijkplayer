@@ -19,6 +19,27 @@
 #import <libkern/OSAtomic.h>
 #import <stdatomic.h>
 
+/// An integer method argument, whether it is absent, a number, or `NSNull`.
+///
+/// A field the caller left out arrives as nil, and one the caller sent as null
+/// arrives as `NSNull` — an object, which does not answer `integerValue`. Sending
+/// that selector throws and terminates the app, so every argument is read through
+/// here instead and an absent one falls back to `fallback`.
+static NSInteger FijkIntArg(id value, NSInteger fallback) {
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber *)value integerValue];
+    }
+    return fallback;
+}
+
+/// The argument as a number, or nil when it is absent or was sent as null.
+///
+/// Needed because `NSNull` is a truthy object: the usual `if (value)` guard lets
+/// it through and the conversion that follows throws.
+static NSNumber *FijkNumberArg(id value) {
+    return [value isKindOfClass:[NSNumber class]] ? (NSNumber *)value : nil;
+}
+
 @interface FijkPlugin ()
 - (void)onPlayingChange:(int)delta;
 - (void)onPlayableChange:(int)delta;
@@ -385,12 +406,14 @@ static const int end = 9;
         result(@(_nativePlayer.duration));
         
     } else if ([@"seekTo" isEqualToString:call.method]) {
-        NSNumber *msec = call.arguments[@"msec"];
-        [_nativePlayer seekTo:[msec longLongValue]];
+        NSNumber *msec = FijkNumberArg(call.arguments[@"msec"]);
+        if (msec) {
+            [_nativePlayer seekTo:[msec longLongValue]];
+        }
         result(@(0));
         
     } else if ([@"setVolume" isEqualToString:call.method]) {
-        NSNumber *volume = call.arguments[@"volume"];
+        NSNumber *volume = FijkNumberArg(call.arguments[@"volume"]);
         if (volume && _nativePlayer) {
             [_nativePlayer setVolume:[volume floatValue]];
         }
@@ -409,17 +432,23 @@ static const int end = 9;
         result(@(0));
         
     } else if ([@"setPlaybackMode" isEqualToString:call.method]) {
-        NSNumber *mode = call.arguments[@"mode"];
-        NSNumber *bufferMs = call.arguments[@"bufferMs"];
-        NSNumber *enableAudio = call.arguments[@"enableAudio"];
-        NSNumber *maxLatencyMs = call.arguments[@"maxLatencyMs"];
-        NSNumber *enableFrameDrop = call.arguments[@"enableFrameDrop"];
-        
-        int ret = [_nativePlayer setPlaybackMode:[mode integerValue]
-                                        bufferMs:[bufferMs integerValue]
-                                     enableAudio:[enableAudio integerValue]
-                                   maxLatencyMs:[maxLatencyMs integerValue]
-                                 enableFrameDrop:[enableFrameDrop integerValue]];
+        // Read through a helper rather than sending `integerValue` straight at
+        // the argument: an argument that is missing arrives as nil, and one that
+        // was sent as null arrives as NSNull — an object that does not answer
+        // `integerValue`, and whose refusal terminates the app. Neither is worth
+        // crashing over, so an absent field falls back to the native default
+        // (`-1` for the numbers, mode 1 = live with audio).
+        //
+        // The buffer arrives as `customBufferMs`, the name Dart uses; `bufferMs`
+        // is read as well because this backend used to expect that name and
+        // never received it.
+        id bufferArg = call.arguments[@"customBufferMs"] ?: call.arguments[@"bufferMs"];
+
+        int ret = [_nativePlayer setPlaybackMode:FijkIntArg(call.arguments[@"mode"], 1)
+                                        bufferMs:FijkIntArg(bufferArg, -1)
+                                     enableAudio:FijkIntArg(call.arguments[@"enableAudio"], -1)
+                                   maxLatencyMs:FijkIntArg(call.arguments[@"maxLatencyMs"], -1)
+                                 enableFrameDrop:FijkIntArg(call.arguments[@"enableFrameDrop"], -1)];
         result(@(ret));
         
     } else if ([@"setupSurface" isEqualToString:call.method]) {
@@ -463,7 +492,7 @@ static const int end = 9;
         NSError *err = nil;
         BOOL ok = [[FFmpegRecorder sharedInstance] startPreRollWithRtspUrl:_dataSource
                                                                 outputPath:path
-                                                            preRollSeconds:preRollSeconds ? [preRollSeconds integerValue] : 5
+                                                            preRollSeconds:FijkIntArg(preRollSeconds, 5)
                                                                      error:&err];
         if (ok) {
             result(@(0));

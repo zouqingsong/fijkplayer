@@ -299,6 +299,29 @@ static void handle_player_method_call(FlMethodChannel* channel,
         }
         response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(0)));
     }
+    else if (strcmp(method, "logLevel") == 0) {
+        // Accepted and not acted on, like the other compatibility calls: the
+        // level belongs to the Dart side's own logging, which is where it is
+        // enforced.
+        response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(0)));
+    }
+    else if (strcmp(method, "setPlaybackMode") == 0) {
+        // The same latency budget Windows accepts, and the same call from Dart:
+        // answered here so that a build without a full Linux playback path still
+        // does what the setting says rather than failing the call. The value is
+        // read the moment it is set; like every other option it goes into the
+        // input when the source is opened.
+        FlValue* buffer_val = fl_value_lookup_string(args, "customBufferMs");
+        if (buffer_val == NULL || fl_value_get_type(buffer_val) == FL_VALUE_TYPE_NULL) {
+            buffer_val = fl_value_lookup_string(args, "maxLatencyMs");
+        }
+        if (buffer_val != NULL &&
+            fl_value_get_type(buffer_val) == FL_VALUE_TYPE_INT) {
+            ffplayer_set_playback_mode(player->native_player,
+                                       (int)fl_value_get_int(buffer_val));
+        }
+        response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(0)));
+    }
     else if (strcmp(method, "setupSurface") == 0) {
         response = FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int(player->texture_id)));
     }

@@ -190,6 +190,67 @@ static BOOL ffmpegRecorderPacketIsKeyframeForCodec(enum AVCodecID codecId, const
     return NO;
 }
 
+/// How much media time one packet of the pre-roll ring accounts for, in
+/// microseconds.
+///
+/// The packet's own duration when it has one, which is the usual case. It is
+/// preferred over the change between two presentation times because an mp4 with
+/// B-frames presents frames out of order: every few frames the next pts is behind
+/// the last, and pacing on it loses that much time — the source is then read
+/// slower than it plays, and a buffer that should hold five seconds takes longer
+/// than five seconds to fill. Falling back to a forward pts difference covers a
+/// stream whose packets carry no duration.
+static int64_t ffmpegRecorderPacketMediaUs(const AVPacket *pkt, AVRational timeBase,
+                                           int64_t lastPtsUs) {
+    if (pkt->duration > 0) {
+        return av_rescale_q(pkt->duration, timeBase, (AVRational){1, 1000000});
+    }
+    int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+    if (ts == AV_NOPTS_VALUE) {
+        return 0;
+    }
+    int64_t ptsUs = av_rescale_q(ts, timeBase, (AVRational){1, 1000000});
+    if (lastPtsUs >= 0 && ptsUs > lastPtsUs) {
+        return ptsUs - lastPtsUs;
+    }
+    return 0;
+}
+
+/// A packet's presentation time in microseconds, or -1 when it has none — kept so
+/// the pacing can fall back to a difference between two of them.
+static int64_t ffmpegRecorderPtsUs(const AVPacket *pkt, AVRational timeBase) {
+    int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+    if (ts == AV_NOPTS_VALUE) {
+        return -1;
+    }
+    return av_rescale_q(ts, timeBase, (AVRational){1, 1000000});
+}
+
+/// Waits until the wall clock has caught up with the media time the pre-roll ring
+/// has buffered.
+///
+/// The pre-roll phase writes nothing, so it cannot be paced on a written timeline
+/// the way the recording phase is. Without this it reads the source as fast as it
+/// can — and a local clip, rewound at its end, is read as fast as the disk allows,
+/// which costs a whole core for a buffer that only ever holds a few seconds.
+static void fijkRecorderPacePreRoll(int64_t *wallUs, int64_t *mediaUs,
+                                   int64_t *lastPtsUs, const AVPacket *pkt,
+                                   AVRational timeBase) {
+    *mediaUs += ffmpegRecorderPacketMediaUs(pkt, timeBase, *lastPtsUs);
+    *lastPtsUs = ffmpegRecorderPtsUs(pkt, timeBase);
+    if (*wallUs < 0) {
+        *wallUs = av_gettime_relative();
+        *mediaUs = 0;
+        return;
+    }
+    int64_t waitUs = (*wallUs + *mediaUs) - av_gettime_relative();
+    // Never hold a stop request for more than a frame or two.
+    if (waitUs > 100000) waitUs = 100000;
+    if (waitUs > 0) {
+        av_usleep((unsigned int)waitUs);
+    }
+}
+
 static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     if (!pkt || !pkt->data || pkt->size < 4) {
         return 0;
@@ -490,6 +551,21 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
     BOOL writing = !_preRollMode;
     BOOL isRtspSource = NO;
 
+    // Pacing for the pre-roll phase, which writes nothing and so cannot be paced
+    // on a written timeline. Without it the ring is filled as fast as the source
+    // can be read — and a local clip, rewound at its end, is read as fast as the
+    // disk allows: a whole core, for a buffer that only ever holds a few seconds.
+    // The wait is accumulated from the packets' own media time, so a rewind (whose
+    // timestamps go backwards) contributes nothing and the pacing carries on.
+    int64_t preRollWallUs = -1;
+    int64_t preRollMediaUs = 0;
+    int64_t preRollLastPtsUs = -1;
+
+    // A rewind that lands on an end of file that is already there (an empty or
+    // vanished source) would spin at full speed, so consecutive rewinds that read
+    // nothing are counted and end the recording instead.
+    int emptyRewinds = 0;
+
     // A local file decodes as fast as the disk allows, so writing it straight
     // out would finish a ten second clip in thirty milliseconds. It is paced to
     // playback speed and rewound at its end instead, which is also what the
@@ -633,6 +709,10 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
                 // the timestamp base is shifted below so the output stays
                 // monotonic.
                 if (loopLocalFile && !_stopRequested) {
+                    if (++emptyRewinds > 3) {
+                        NSLog(@"[FFmpegRecorder] Source ends as soon as it is rewound; ending the recording");
+                        break;
+                    }
                     AVStream *loopStream = _inputContext->streams[_videoStreamIndex];
                     int64_t loopTs = av_rescale_q(_startPositionMs, (AVRational){1, 1000}, loopStream->time_base);
                     if (av_seek_frame(_inputContext, _videoStreamIndex, loopTs, AVSEEK_FLAG_BACKWARD) >= 0) {
@@ -648,6 +728,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
             }
             break;
         }
+
+        emptyRewinds = 0;
 
         if (pkt.stream_index != _videoStreamIndex) {
             av_packet_unref(&pkt);
@@ -686,6 +768,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
                         gotKeyframe = YES;
                     }
                 }
+                fijkRecorderPacePreRoll(&preRollWallUs, &preRollMediaUs, &preRollLastPtsUs,
+                                        &pkt, inStr->time_base);
                 av_packet_unref(&pkt);
                 continue;
             } else {
@@ -698,6 +782,8 @@ static int ffmpegRecorderConvertAnnexBToLengthPrefixed(AVPacket *pkt) {
                 if ([self preRollAppendPacket:&pkt]) {
                     [self preRollHardCap];
                 }
+                fijkRecorderPacePreRoll(&preRollWallUs, &preRollMediaUs, &preRollLastPtsUs,
+                                        &pkt, inStr->time_base);
                 av_packet_unref(&pkt);
                 continue;
             }

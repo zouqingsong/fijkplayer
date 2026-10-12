@@ -3,6 +3,51 @@
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
 ---
+## 0.11.10 (2026-10-12)
+
+* fix the **pre-record buffer reading a local source at full speed**. The pre-roll
+  phase writes nothing, so it was the one part of the recorder with no pacing: a
+  bundled clip — read as fast as the disk allows, and rewound at its end — was
+  looped hundreds of times a second, pinning a core for a buffer that only ever
+  holds a few seconds. It is now paced on the packets' own duration, so the ring
+  fills at the speed the clip plays (a five second window takes five seconds).
+* a rewind that lands on an end of file that is already there (an empty or
+  vanished source) now ends the recording instead of looping forever.
+* fix a **crash on the Apple platforms** when a playback mode was set. Dart sent
+  the fields a config does not name as `null`, and a null crosses the channel as
+  `NSNull` — an object, not a nil — so the `[value integerValue]` the handler sent
+  it raised `NSInvalidArgumentException: -[NSNull integerValue]` and terminated
+  the app on the spot. Absent fields are now left out of the map instead, and the
+  macOS/iOS handlers read every argument through a helper that tolerates an
+  absent or null value and falls back to the native default.
+* fix the **buffer never reaching the backend** on macOS, iOS and Android. Dart
+  sends it as `customBufferMs`; the Apple handlers read `bufferMs`, so they always
+  got nil and used 0 — a buffer of no frames. They now read what Dart sends, with
+  the old name kept as a fallback for callers that used it.
+* `seekTo`, `setVolume` and `startPreRoll` on the Apple platforms no longer assume
+  their argument is a number. The `if (volume)` guard they had was no guard at all:
+  `NSNull` is a truthy object, so a null volume passed it and the conversion
+  threw.
+
+---
+## 0.11.9 (2026-10-11)
+
+* `setPlaybackMode` now does something on the desktop backends instead of
+  failing the call. Dart has offered it all along (the mobile backends act on it),
+  and a Windows or Linux player that did not answer it threw
+  `MissingPluginException` on every source that asked to be tuned.
+* the desktop player accepts a **latency budget** in milliseconds and spends it
+  where it can: the input's `max_delay`, and — at 200 ms or below — no demuxer
+  reordering (`reorder_queue_size=0`), no read-ahead (`fflags=nobuffer`) and
+  `AV_CODEC_FLAG_LOW_DELAY` on the video decoder, so a stream with B-frames
+  emits each frame as soon as it is decoded rather than holding it for the ones
+  it depends on. The old hard-coded half second is the default, exactly as
+  before. This backend decodes every frame as it arrives and keeps no queue of
+  its own, which is what makes those two buffers the whole story here.
+* the budget is remembered and re-applied when a source is set, so the order of
+  `setPlaybackMode` and `setDataSource` cannot decide whether it takes effect.
+
+---
 ## 0.11.8 (2026-10-10)
 
 * fix recording a **file** source on Windows — a bundled sample, say — which wrote

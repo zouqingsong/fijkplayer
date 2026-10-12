@@ -2,6 +2,19 @@
 
 #import "FJKNativePlayerHandler.h"
 
+/// An integer method argument, whether it is absent, a number, or `NSNull`.
+///
+/// A field the caller left out arrives as nil, and one the caller sent as null
+/// arrives as `NSNull` — an object, which does not answer `integerValue`. Sending
+/// that selector throws and terminates the app, so every argument is read through
+/// here instead and an absent one falls back to `fallback`.
+static NSInteger FijkIntArg(id value, NSInteger fallback) {
+    if ([value isKindOfClass:[NSNumber class]]) {
+        return [(NSNumber *)value integerValue];
+    }
+    return fallback;
+}
+
 @implementation FJKPlayerTexture {
     FJKNativePlayer *_player;
     int64_t _textureId;
@@ -198,18 +211,14 @@
         return;
     }
     
-    NSNumber *mode = call.arguments[@"mode"];
-    NSNumber *bufferMs = call.arguments[@"customBufferMs"];
-    NSNumber *enableAudio = call.arguments[@"enableAudio"];
-    NSNumber *maxLatencyMs = call.arguments[@"maxLatencyMs"];
-    NSNumber *enableFrameDrop = call.arguments[@"enableFrameDrop"];
-    
-    // Apply defaults if nil
-    NSInteger modeValue = mode ? [mode integerValue] : 2; // VOD_OPTIMIZED
-    NSInteger bufferMsValue = bufferMs ? [bufferMs integerValue] : -1;
-    NSInteger enableAudioValue = enableAudio ? ([enableAudio boolValue] ? 1 : 0) : -1;
-    NSInteger maxLatencyMsValue = maxLatencyMs ? [maxLatencyMs integerValue] : -1;
-    NSInteger enableFrameDropValue = enableFrameDrop ? ([enableFrameDrop boolValue] ? 1 : 0) : -1;
+    // Absent fields are nil and null fields are NSNull, which is an object and
+    // not a nil: `[NSNull integerValue]` throws. Both are read through the same
+    // helper, falling back to the native defaults.
+    NSInteger modeValue = FijkIntArg(call.arguments[@"mode"], 1);
+    NSInteger bufferMsValue = FijkIntArg(call.arguments[@"customBufferMs"], -1);
+    NSInteger enableAudioValue = FijkIntArg(call.arguments[@"enableAudio"], -1);
+    NSInteger maxLatencyMsValue = FijkIntArg(call.arguments[@"maxLatencyMs"], -1);
+    NSInteger enableFrameDropValue = FijkIntArg(call.arguments[@"enableFrameDrop"], -1);
     
     int ret = [_player setPlaybackMode:modeValue
                               bufferMs:bufferMsValue

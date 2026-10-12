@@ -110,13 +110,20 @@ class FijkPlaybackConfig {
     );
   }
 
+  /// The arguments for `setPlaybackMode`, without the fields this config does
+  /// not name.
+  ///
+  /// Absent fields are **left out rather than sent as null**, and that is not
+  /// tidiness: a null crosses the platform channel as `NSNull`, which is an
+  /// object, not a nil, so `[value integerValue]` on it throws and terminates the
+  /// app. Leaving the key out gives the native side a nil it can fall back on.
   Map<String, dynamic> toMap() {
     return {
       'mode': mode.index,
-      'customBufferMs': customBufferMs,
-      'enableAudio': enableAudio,
-      'maxLatencyMs': maxLatencyMs,
-      'enableFrameDrop': enableFrameDrop,
+      if (customBufferMs != null) 'customBufferMs': customBufferMs,
+      if (enableAudio != null) 'enableAudio': enableAudio,
+      if (maxLatencyMs != null) 'maxLatencyMs': maxLatencyMs,
+      if (enableFrameDrop != null) 'enableFrameDrop': enableFrameDrop,
     };
   }
 }
