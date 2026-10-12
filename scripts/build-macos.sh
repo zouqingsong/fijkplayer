@@ -51,6 +51,13 @@ download_ffmpeg() {
 }
 
 # Common configure flags
+#
+# Note on xlib: the only FFmpeg components that use X11 are libavdevice (xcbgrab,
+# xv), vaapi_x11 and vdpau, all of which are switched off below. Leaving xlib at
+# its default of "autodetect" therefore bought nothing but a link-time dependency
+# on Homebrew's libX11 chain (libX11 -> libxcb -> libXau/libXdmcp, ~1.2 MB), which
+# every app using this build then had to re-sign and bundle, and which made a
+# machine without X11 unable to build. --disable-xlib keeps the dylibs free of it.
 get_common_flags() {
     echo "\
         --disable-programs \
@@ -80,6 +87,7 @@ get_common_flags() {
         --enable-videotoolbox \
         --disable-indevs \
         --disable-outdevs \
+        --disable-xlib \
         --disable-vulkan \
         --disable-v4l2-m2m \
         --disable-vaapi \
