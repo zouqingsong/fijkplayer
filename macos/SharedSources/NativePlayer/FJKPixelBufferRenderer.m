@@ -2,6 +2,13 @@
 
 #import "FJKPixelBufferRenderer.h"
 #import <Accelerate/Accelerate.h>
+// The same gate the player uses: this file prints too, and the level is declared
+// in one place.
+#import "FJKNativePlayer.h"
+
+// Gated at info, like the player's own lines, so the app has to have asked for
+// that much detail before a renderer says anything.
+#define NSLog(...) FJKPlayerLog(FJKPlayerLogInfo, __VA_ARGS__)
 
 @interface FJKPixelBufferRenderer () {
     CVPixelBufferRef _outputBuffer;

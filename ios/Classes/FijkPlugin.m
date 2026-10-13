@@ -154,13 +154,11 @@ static FijkPlugin *_instance = nil;
         }
         result(nil);
     } else if ([@"logLevel" isEqualToString:call.method]) {
-        NSNumber *level = argsMap[@"level"];
-        int l = [level intValue] / 100;
-        l = l < 0 ? 0 : l;
-        l = l > 8 ? 8 : l;
-        // Log level control for native player
-        // TODO: Implement native player log level control
-        NSLog(@"[FijkPlugin] Set log level: %d", l);
+        // Dart sends FijkLogLevel.level: 0 (everything) up to 800 (silent) in
+        // steps of 100, which divides down to the same 0-8 index used on this
+        // side, where a larger number means less is printed.
+        int l = [argsMap[@"level"] intValue] / 100;
+        FJKPlayerLogLevel = l < 0 ? 0 : (l > 8 ? 8 : l);
         result(nil);
     } else if ([@"setOrientationPortrait" isEqualToString:call.method]) {
         UIInterfaceOrientationMask mask = [[UIApplication sharedApplication]

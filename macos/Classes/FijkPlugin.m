@@ -9,6 +9,9 @@
 #import "FijkQueuingEventSink.h"
 #import "FijkRecorderHandler.h"
 #import "FijkFFmpegKitHandler.h"
+// For the log-level gate that the "logLevel" call below applies: the player
+// declares it, because the player is what has to respect it.
+#import "FJKNativePlayer.h"
 
 #import <FlutterMacOS/FlutterMacOS.h>
 #import <Foundation/Foundation.h>
@@ -111,7 +114,13 @@ static FijkPlugin *_instance = nil;
         }
         result(nil);
     } else if ([@"logLevel" isEqualToString:call.method]) {
-        // Log level control
+        // Dart sends FijkLogLevel.level: 0 (everything) up to 800 (silent) in
+        // steps of 100, which divides down to the same 0-8 index used on this
+        // side, where a larger number means less is printed. Until this was
+        // applied the level went nowhere on macOS, so the player printed
+        // unconditionally whatever the app had asked for.
+        int l = [argsMap[@"level"] intValue] / 100;
+        FJKPlayerLogLevel = l < 0 ? 0 : (l > 8 ? 8 : l);
         result(nil);
     } else if ([@"setOrientationPortrait" isEqualToString:call.method]) {
         // Not applicable on macOS

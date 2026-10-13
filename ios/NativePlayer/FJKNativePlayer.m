@@ -12,6 +12,34 @@
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
+#include <stdarg.h>
+
+/// The level in force, and the gate every line in this file passes through.
+///
+/// Defined here rather than in the plugin, and above the `#define` below, because
+/// the gate itself has to call the real NSLog: redirecting the name is what makes
+/// the file's own lines quietable, so this is the one place that must keep the
+/// original.
+NSInteger FJKPlayerLogLevel = FJKPlayerLogError;
+
+void FJKPlayerLog(NSInteger severity, NSString *format, ...) {
+    if (severity < FJKPlayerLogLevel) {
+        return;
+    }
+    va_list args;
+    va_start(args, format);
+    NSString *message = [[NSString alloc] initWithFormat:format arguments:args];
+    va_end(args);
+    NSLog(@"%@", message);
+}
+
+// Every plain NSLog in this file passes the gate. The player writes a line a
+// second while it plays, and none of it could be silenced from Dart, because
+// NSLog belongs to the system log rather than to the plugin — the app's log level
+// had no effect on it at all. The level arrives through FijkPlugin's "logLevel"
+// call, and these lines are filed as info, so they appear when the app has been
+// asked for that much detail and stay quiet otherwise.
+#define NSLog(...) FJKPlayerLog(FJKPlayerLogInfo, __VA_ARGS__)
 
 @interface FJKNativePlayer () {
     // Native C components

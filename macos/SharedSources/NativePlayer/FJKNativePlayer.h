@@ -10,6 +10,28 @@
 #import <AVFoundation/AVFoundation.h>
 #import <CoreVideo/CoreVideo.h>
 
+/// How much the native player prints, on the same 0-8 index the Dart side sends
+/// through FijkPlugin's "logLevel" call: 0 is everything, 8 is nothing. A line
+/// prints when it is at least as severe as the level in force, so 4 shows info
+/// and above, and 6 shows errors only.
+///
+/// Declared here because a line has to be able to ask the question wherever it is
+/// written — the renderer prints as well, and neither file is where the level
+/// arrives.
+extern NSInteger FJKPlayerLogLevel;
+
+/// Severities, on the numbering the Dart side sends.
+enum {
+    FJKPlayerLogDebug = 3,
+    FJKPlayerLogInfo = 4,
+    FJKPlayerLogWarn = 5,
+    FJKPlayerLogError = 6,
+};
+
+/// Prints [format] when it is at least as severe as the level in force.
+void FJKPlayerLog(NSInteger severity, NSString *format, ...)
+    NS_FORMAT_FUNCTION(2, 3);
+
 NS_ASSUME_NONNULL_BEGIN
 
 // Player states
