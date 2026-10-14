@@ -63,6 +63,33 @@ fi
 cp "$INSTALL_PATH/lib/"*.dylib "$FIJKPLAYER_IOS/lib/arm64-simulator/"
 echo "Copied arm64-simulator libraries"
 
+# FFmpeg records the build machine's own paths as install names, so the dylibs
+# copied above reference /Users/<builder>/... . The app embeds each of them as
+# <lib>.framework/<lib> inside the bundle, so every reference - the library's own
+# id and each of its dependencies - has to point at @rpath. Without this the
+# bundle links fine, runs on the machine that built it, and fails to launch
+# everywhere else with a dyld "image not found" error.
+retarget_ffmpeg_libs() {
+    local dir="$1" lib ref base
+    for lib in libavcodec libavfilter libavformat libavutil libswresample libswscale; do
+        [ -f "$dir/$lib.dylib" ] || continue
+        install_name_tool -id "@rpath/$lib.framework/$lib" "$dir/$lib.dylib"
+        otool -L "$dir/$lib.dylib" | tail -n +2 | awk '{print $1}' \
+            | grep -E '^/(Users|opt|usr/local)|\.dylib$' | while read -r ref; do
+            base="$(basename "$ref" | sed -E 's/\.[0-9]+\.dylib$//; s/\.dylib$//')"
+            case " libavcodec libavfilter libavformat libavutil libswresample libswscale " in
+                *" $base "*) install_name_tool -change "$ref" "@rpath/$base.framework/$base" "$dir/$lib.dylib" ;;
+            esac
+        done
+    done
+    echo "Retargeted FFmpeg install names to @rpath in $dir"
+}
+for slice in arm64 arm64-simulator; do
+    if [ -d "$FIJKPLAYER_IOS/lib/$slice" ]; then
+        retarget_ffmpeg_libs "$FIJKPLAYER_IOS/lib/$slice"
+    fi
+done
+
 # Copy headers (from device build)
 cp -r "$ARM64_DIR/include/"* "$FIJKPLAYER_IOS/include/"
 echo "Copied headers"
