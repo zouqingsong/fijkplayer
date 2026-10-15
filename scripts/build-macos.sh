@@ -116,12 +116,32 @@ build_arch() {
     # Set compiler flags
     local CFLAGS="-arch ${ARCH} -mmacosx-version-min=${MACOS_MIN_VERSION}"
     local LDFLAGS="-arch ${ARCH} -mmacosx-version-min=${MACOS_MIN_VERSION}"
-    
+
+    # Resolve zlib from the SDK (install name /usr/lib/libz.1.dylib) instead of
+    # letting pkg-config prefer Homebrew's copy: /opt/homebrew/opt/zlib is a
+    # single-architecture arm64 build, so an x86_64 slice cannot link against it.
+    # macOS ships an ABI-compatible libz at the same compatibility version, and
+    # the app rewrites any Homebrew zlib reference to it anyway, so linking the
+    # system zlib here keeps both architectures identical.
+    export PKG_CONFIG_PATH=''
+    export PKG_CONFIG_LIBDIR='/nonexistent'
+
+    # FFmpeg's configure compiles and runs a small test program. An x86_64 test
+    # binary cannot run on an Apple Silicon host unless Rosetta 2 is installed,
+    # which fails the sanity check with "Bad CPU type in executable", so declare
+    # a cross build whenever the target architecture differs from the host:
+    # configure then skips running test binaries entirely.
+    local CROSS_FLAGS=""
+    if [ "$ARCH" != "$(uname -m)" ]; then
+        CROSS_FLAGS="--enable-cross-compile"
+    fi
+
     # Configure
     echo -e "${GREEN}Configuring FFmpeg for macOS ${ARCH}...${NC}"
     make clean 2>/dev/null || true
     ./configure \
         $(get_common_flags) \
+        $CROSS_FLAGS \
         --prefix="$INSTALL_PATH" \
         --target-os=darwin \
         --arch="$ARCH" \
