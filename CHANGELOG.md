@@ -3,6 +3,16 @@
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
 ---
+## 0.11.11 (2026-10-17)
+
+* support **HEVC (H.265) playback on iOS**. The native player built its video
+  format description from H.264 parameter sets only, and an HEVC blob parses far
+  enough through that path to "succeed" — so an HEVC clip prepared, reported its
+  duration and size, and then never delivered a frame, which reads as one frozen
+  still with a progress bar that does not move. The description is now built from
+  the clip's own hvcC parameter sets (VPS/SPS/PPS), and the player falls back to
+  the FFmpeg software decoder when those are missing or unusable.
+
 ## 0.11.10 (2026-10-12)
 
 * fix the **pre-record buffer reading a local source at full speed**. The pre-roll

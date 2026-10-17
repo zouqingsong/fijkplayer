@@ -852,11 +852,128 @@ static int fjkConvertLengthPrefixedToAnnexB(AVPacket *pkt) {
           _audioStreamIndex >= 0 ? @"YES" : @"NO");
 }
 
-- (int)createVideoToolboxDecoder:(FFStream *)stream {
-    // Create format description from extradata (SPS/PPS)
+/// Builds a VideoToolbox description from an HEVC hvcC extradata blob.
+///
+/// hvcC is a fixed 22-byte configuration followed by arrays of parameter sets,
+/// unlike avcC's flat SPS/PPS pairs. VideoToolbox needs them in VPS, SPS, PPS
+/// order, and the length prefix the packets use is recorded in the header's low
+/// two bits rather than being implied.
+///
+/// Returns a +1 reference, or NULL when [stream] carries no usable parameter
+/// sets — the caller then falls back to the FFmpeg software decoder.
+- (CMFormatDescriptionRef)newHEVCFormatDescription:(FFStream *)stream {
+    const uint8_t *extradata = stream->extradata;
+    int extradata_size = stream->extradata_size;
+
+    // 22 bytes of configuration, then numOfArrays at [22], then the arrays.
+    if (extradata_size < 23) {
+        NSLog(@"[FJKNativePlayer] hvcC extradata too small: %d bytes", extradata_size);
+        return NULL;
+    }
+
+    int nalUnitLengthSize = (extradata[21] & 0x03) + 1;
+    int numArrays = extradata[22];
+    int offset = 23;
+    NSLog(@"[FJKNativePlayer] hvcC NAL unit length size: %d bytes, %d arrays",
+          nalUnitLengthSize, numArrays);
+
+    NSMutableArray *vpsSets = [NSMutableArray array];
+    NSMutableArray *spsSets = [NSMutableArray array];
+    NSMutableArray *ppsSets = [NSMutableArray array];
+
+    for (int array = 0; array < numArrays; array++) {
+        if (offset + 3 > extradata_size) {
+            NSLog(@"[FJKNativePlayer] Invalid hvcC array header");
+            return NULL;
+        }
+
+        int nalType = extradata[offset] & 0x3F;
+        int numNalus = (extradata[offset + 1] << 8) | extradata[offset + 2];
+        offset += 3;
+
+        for (int nal = 0; nal < numNalus; nal++) {
+            if (offset + 2 > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid hvcC NAL size offset");
+                return NULL;
+            }
+
+            int nalSize = (extradata[offset] << 8) | extradata[offset + 1];
+            offset += 2;
+
+            if (nalSize <= 0 || offset + nalSize > extradata_size) {
+                NSLog(@"[FJKNativePlayer] Invalid hvcC NAL data");
+                return NULL;
+            }
+
+            NSData *set = [NSData dataWithBytes:&extradata[offset] length:nalSize];
+            offset += nalSize;
+
+            switch (nalType) {
+                case 32: [vpsSets addObject:set]; break; // VPS
+                case 33: [spsSets addObject:set]; break; // SPS
+                case 34: [ppsSets addObject:set]; break; // PPS
+                default: break;                          // SEI and friends are not parameter sets
+            }
+        }
+    }
+
+    if (vpsSets.count == 0 || spsSets.count == 0 || ppsSets.count == 0) {
+        NSLog(@"[FJKNativePlayer] hvcC missing parameter sets (vps=%d sps=%d pps=%d)",
+              (int)vpsSets.count, (int)spsSets.count, (int)ppsSets.count);
+        return NULL;
+    }
+
+    // VideoToolbox takes them in VPS, SPS, PPS order.
+    NSMutableArray *sets = [NSMutableArray array];
+    [sets addObjectsFromArray:vpsSets];
+    [sets addObjectsFromArray:spsSets];
+    [sets addObjectsFromArray:ppsSets];
+
+    const uint8_t *parameterSetPointers[sets.count];
+    size_t parameterSetSizes[sets.count];
+
+    for (NSUInteger i = 0; i < sets.count; i++) {
+        NSData *set = sets[i];
+        parameterSetPointers[i] = set.bytes;
+        parameterSetSizes[i] = set.length;
+    }
+
     CMFormatDescriptionRef formatDesc = NULL;
-    
-    if (stream->extradata && stream->extradata_size > 0) {
+    OSStatus status = CMVideoFormatDescriptionCreateFromHEVCParameterSets(
+        kCFAllocatorDefault,
+        (size_t)sets.count,
+        parameterSetPointers,
+        parameterSetSizes,
+        nalUnitLengthSize,
+        NULL,
+        &formatDesc
+    );
+
+    if (status != noErr) {
+        NSLog(@"[FJKNativePlayer] Failed to create HEVC format description: %d", (int)status);
+        return NULL;
+    }
+
+    NSLog(@"[FJKNativePlayer] Parsed hvcC: %d VPS, %d SPS, %d PPS",
+          (int)vpsSets.count, (int)spsSets.count, (int)ppsSets.count);
+    return formatDesc;
+}
+
+- (int)createVideoToolboxDecoder:(FFStream *)stream {
+    // Create format description from the codec's parameter sets.
+    CMFormatDescriptionRef formatDesc = NULL;
+
+    if (stream->video_codec == FF_VIDEO_CODEC_H265) {
+        // Branch on the codec: avcC and hvcC pack their parameter sets
+        // differently, and building an H.264 description out of hvcC bytes
+        // "succeeds" while never decoding a frame — a clip that prepares and
+        // then shows its first still forever.
+        formatDesc = [self newHEVCFormatDescription:stream];
+        if (!formatDesc) {
+            NSLog(@"[FJKNativePlayer] No HEVC format description; falling back to software decode");
+            return -1;
+        }
+    } else if (stream->extradata && stream->extradata_size > 0) {
         // Parse H.264 extradata (avcC format)
         // avcC format: [configurationVersion(1)][AVCProfileIndication(1)][profile_compatibility(1)][AVCLevelIndication(1)]
         //              [lengthSizeMinusOne(1)][numOfSequenceParameterSets(1)][SPS...]
